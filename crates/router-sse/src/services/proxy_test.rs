@@ -9,6 +9,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
+use crate::executors::http::tls_builder;
+
 const DEFAULT_TEST_URL: &str = "https://google.com/";
 const DEFAULT_TIMEOUT_MS: u64 = 8000;
 const MAX_TIMEOUT_MS: u64 = 30_000;
@@ -47,7 +49,7 @@ pub async fn test_proxy_url(
         }
     };
 
-    let client = match reqwest::Client::builder().proxy(proxy).build() {
+    let client = match tls_builder().proxy(proxy).build() {
         Ok(c) => c,
         Err(e) => {
             return json!({

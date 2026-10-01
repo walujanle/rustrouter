@@ -16,6 +16,8 @@ use std::time::Duration;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use router_sse::executors::http::tls_builder;
+
 use crate::state::{APP_VERSION, AppState};
 
 const RELEASES_URL: &str = "https://api.github.com/repos/walujanle/rustrouter/releases/latest";
@@ -125,7 +127,7 @@ async fn check_once(_state: &AppState) {
 }
 
 async fn fetch_latest() -> Result<UpdateStatus, String> {
-    let client = reqwest::Client::builder()
+    let client = tls_builder()
         .user_agent(USER_AGENT)
         .timeout(Duration::from_secs(30))
         .build()

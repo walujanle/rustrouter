@@ -14,6 +14,7 @@ use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use router_sse::executors::http::tls_builder;
 use router_sse::services::proxy_test::test_proxy_url;
 
 use crate::error::ApiError;
@@ -284,10 +285,7 @@ pub async fn delete(State(state): State<AppState>, Path(id): Path<String>) -> Re
 /// `testVercelRelay(relayUrl)`: a relay worker probe with a 10 s cap.
 async fn test_relay(relay_url: &str) -> Value {
     let started = Instant::now();
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-    {
+    let client = match tls_builder().timeout(Duration::from_secs(10)).build() {
         Ok(c) => c,
         Err(e) => return json!({ "ok": false, "status": 500, "error": e.to_string() }),
     };
@@ -599,10 +597,7 @@ pub async fn vercel_deploy(
         .map(str::to_string)
         .unwrap_or_else(default_project_name);
 
-    let Ok(client) = reqwest::Client::builder()
-        .timeout(Duration::from_secs(150))
-        .build()
-    else {
+    let Ok(client) = tls_builder().timeout(Duration::from_secs(150)).build() else {
         return ApiError::internal("Deploy failed").into_response();
     };
 
@@ -719,10 +714,7 @@ pub async fn cloudflare_deploy(
         .map(str::to_string)
         .unwrap_or_else(default_project_name);
 
-    let Ok(client) = reqwest::Client::builder()
-        .timeout(Duration::from_secs(60))
-        .build()
-    else {
+    let Ok(client) = tls_builder().timeout(Duration::from_secs(60)).build() else {
         return ApiError::internal("Deploy failed").into_response();
     };
     let script_url = format!(
@@ -839,10 +831,7 @@ pub async fn deno_deploy(
         .map(str::to_string)
         .unwrap_or_else(default_project_name);
 
-    let Ok(client) = reqwest::Client::builder()
-        .timeout(Duration::from_secs(90))
-        .build()
-    else {
+    let Ok(client) = tls_builder().timeout(Duration::from_secs(90)).build() else {
         return ApiError::internal("Deploy failed").into_response();
     };
 

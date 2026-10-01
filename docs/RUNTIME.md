@@ -113,6 +113,20 @@ write applies it.
 This is a cross-cutting concern touching every upstream call. Any new outbound client must resolve
 its proxy through the same path.
 
+TLS trust is the other cross-cutting concern, and `http::tls_builder()` is its choke point. On
+desktop it is `reqwest::Client::builder()` verbatim: the OS trust store, no behavioural change. On
+`target_os = "android"` it calls `ClientBuilder::tls_certs_only` instead, because reqwest's
+`rustls` feature wires up `rustls-platform-verifier`, whose only Android backend is JNI and panics
+at the first handshake under Termux (`android.rs:90`), which has no JVM or `Context`. The store is
+Termux's own CA bundle (`rustls-native-certs` → `openssl-probe`, which hardcodes the Termux path)
+unioned with the bundled Mozilla roots from `webpki-root-certs`. The union is deliberate:
+`tls_certs_only` with no roots trusts nothing, so a Termux install without `ca-certificates` would
+fail every HTTPS call with `UnknownIssuer` instead of panicking. The bundled set keeps the store
+non-empty. The consequence is that on Android the trust store is the bundled set plus Termux's,
+not the Android system store — a routing gateway only needs public CAs, and the desktop path is
+untouched. A new outbound client goes through `tls_builder()` for the same reason it goes through
+the proxy path.
+
 Every resolved outbound send logs one line at `target: "router_sse::proxy"`: `[ProxyFetch] proxy ->
 <host> via <proxy> (<source>)`, or `direct`, or `relay` for the Vercel relay. The source tag is
 `connection` / `outbound` / `env`, so a proxy set on the connection is distinguishable from one

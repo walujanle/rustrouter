@@ -23,7 +23,7 @@ use axum::response::{IntoResponse, Response};
 use regex::Regex;
 use serde_json::{Map, Value, json};
 
-use router_sse::executors::http::{ProxyOptions, prepare_send};
+use router_sse::executors::http::{ProxyOptions, prepare_send, tls_builder};
 use router_sse::executors::oauth::{
     merge_refreshed_credentials, should_refresh_credentials, to_expires_at, to_iso,
 };
@@ -2432,10 +2432,7 @@ pub async fn test(State(state): State<AppState>, Path(id): Path<String>) -> Resp
 
 /// An 8-second probe client.
 fn probe_client_8s() -> Option<reqwest::Client> {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(8))
-        .build()
-        .ok()
+    tls_builder().timeout(Duration::from_secs(8)).build().ok()
 }
 
 /// One plain probe (no connection proxy) → the response status.

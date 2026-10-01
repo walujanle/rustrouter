@@ -12,6 +12,7 @@ use serde_json::{Map, Value, json};
 use std::net::SocketAddr;
 use std::time::Duration;
 
+use router_sse::executors::http::tls_builder;
 use router_sse::modalities::ssrf;
 use router_sse::providers::ui::{
     ANTHROPIC_COMPATIBLE_PREFIX, CUSTOM_EMBEDDING_PREFIX, OPENAI_COMPATIBLE_PREFIX,
@@ -308,10 +309,7 @@ pub(crate) fn chat_error_message(status: u16) -> String {
 
 /// A 10-second probe client.
 pub(crate) fn probe_client() -> Option<reqwest::Client> {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-        .ok()
+    tls_builder().timeout(Duration::from_secs(10)).build().ok()
 }
 
 /// `POST /api/provider-nodes/validate`.

@@ -19,6 +19,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use futures::StreamExt;
 
+use crate::executors::http::tls_builder;
 use crate::runtime_config::{
     BLOCKED_HOSTS, IMAGE_SIGNATURES, MAX_IMAGE_BYTES, MEDIA_FETCH_TIMEOUT_MS,
 };
@@ -143,7 +144,7 @@ pub async fn fetch_image_as_base64(image_url: &str) -> Option<FetchedImage> {
     let pinned = resolve_pinned_ips(&hostname).await?;
     let port = url.port_or_known_default()?;
 
-    let client = reqwest::Client::builder()
+    let client = tls_builder()
         .resolve(&hostname, std::net::SocketAddr::new(pinned[0], port))
         .redirect(reqwest::redirect::Policy::none())
         .timeout(std::time::Duration::from_millis(MEDIA_FETCH_TIMEOUT_MS))

@@ -2059,6 +2059,7 @@ dependencies = [
  "regex",
  "reqwest",
  "router-db",
+ "rustls-native-certs",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -2068,6 +2069,7 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+ "webpki-root-certs",
 ]
 
 [[package]]

@@ -17,6 +17,7 @@ use serde_json::{Map, Value, json};
 use tokio::sync::Mutex;
 
 use crate::catalog::catalog::{self, Capabilities};
+use crate::executors::http::tls_builder;
 use crate::providers::registry::registry;
 use crate::utils::in_flight::InFlightGuard;
 use router_db::time::now_ms;
@@ -330,10 +331,7 @@ pub async fn sync_model_catalog() -> Option<Value> {
 }
 
 async fn run_sync() -> Option<Value> {
-    let client = reqwest::Client::builder()
-        .timeout(FETCH_TIMEOUT_MS)
-        .build()
-        .ok()?;
+    let client = tls_builder().timeout(FETCH_TIMEOUT_MS).build().ok()?;
     let mut req = client.get(CATALOG_URL).header("accept", "application/json");
     let etag = INNER.etag.lock().await.clone();
     let file_version = INNER.file_version.load(Ordering::SeqCst);

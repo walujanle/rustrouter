@@ -29,3 +29,10 @@ tokio-util.workspace = true
 tracing.workspace = true
 url.workspace = true
 uuid.workspace = true
+
+# Android only. reqwest's rustls verifier is JNI-backed there and panics under
+# Termux, which has no JVM; `http::tls_builder` builds the trust store from
+# these instead. Both are pure Rust, so the NDK build needs no extra toolchain.
+[target.'cfg(target_os = "android")'.dependencies]
+rustls-native-certs = "0.8.4"
+webpki-root-certs = "1.0.9"

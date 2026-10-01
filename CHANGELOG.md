@@ -5,6 +5,21 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Outbound HTTPS no longer panics on Android/Termux with
+  `Expect rustls-platform-verifier to be initialized`. `reqwest`'s `rustls`
+  feature selects `rustls-platform-verifier`, whose Android backend is
+  JNI-based and needs an Android `Context` and a JVM; a Termux process has
+  neither, so the first TLS handshake aborted on a tokio worker thread. Every
+  outbound client now builds through `router_sse::executors::http::tls_builder`,
+  which on `target_os = "android"` calls `ClientBuilder::tls_certs_only` with a
+  trust store loaded from Termux's own bundle unioned with the bundled Mozilla
+  roots. The union matters: `tls_certs_only` with an empty store trusts nothing,
+  so a Termux install without `ca-certificates` would have swapped the panic for
+  a silent `UnknownIssuer` on every call. Other targets keep reqwest's default
+  OS trust store unchanged.
+
 ## [0.1.2] - 2026-10-01
 
 ### Fixed

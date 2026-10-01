@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
+use crate::executors::http::tls_builder;
 use crate::handlers::chat_core::non_streaming::unwrap_cline_envelope;
 use crate::services::auth::resolve_provider_id;
 use crate::translator::concerns::primitives::js_truthy;
@@ -82,7 +83,7 @@ pub async fn ping_model_by_kind(
     headers: &[(String, String)],
 ) -> Value {
     let started = Instant::now();
-    let Ok(client) = reqwest::Client::builder()
+    let Ok(client) = tls_builder()
         .timeout(Duration::from_millis(PROBE_TIMEOUT_MS))
         .build()
     else {

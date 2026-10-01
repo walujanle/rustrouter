@@ -43,6 +43,54 @@ const MITM_BYPASS_HOSTS: [&str; 6] = [
     "api2.cursor.sh",
 ];
 
+/// A `reqwest::ClientBuilder` with the TLS trust roots wired for the target.
+///
+/// On Android the default platform verifier is JNI-backed
+/// (`rustls-platform-verifier`), and Termux has no JVM or Android `Context` to
+/// initialize it, so the first handshake panics at
+/// `rustls-platform-verifier/src/android.rs:90`. `tls_certs_only` bypasses it:
+/// reqwest then builds a plain WebPKI verifier over the roots passed here.
+///
+/// The roots are Termux's own bundle unioned with the bundled Mozilla set. The
+/// union matters: `tls_certs_only` with no roots trusts nothing, so a Termux
+/// install without the `ca-certificates` package would swap the panic for a
+/// silent `UnknownIssuer` on every call. The bundled set guarantees a non-empty
+/// store, and the Termux bundle keeps the user's own CAs.
+///
+/// Every other target keeps reqwest's default (OS trust store). Callers that
+/// only ever hit plain `http` still go through this for uniformity; the builder
+/// does nothing TLS-related until a handshake happens.
+#[cfg(target_os = "android")]
+pub fn tls_builder() -> reqwest::ClientBuilder {
+    let mut certs = Vec::new();
+    let native = rustls_native_certs::load_native_certs();
+    for der in native.certs {
+        match reqwest::Certificate::from_der(der.as_ref()) {
+            Ok(cert) => certs.push(cert),
+            Err(e) => tracing::warn!("[TLS] skipping malformed Termux CA: {e}"),
+        }
+    }
+    if certs.is_empty() {
+        tracing::warn!(
+            "[TLS] no CA bundle at $PREFIX/etc/tls/cert.pem (pkg install ca-certificates); \
+             falling back to bundled roots"
+        );
+    }
+    for der in webpki_root_certs::TLS_SERVER_ROOT_CERTS {
+        if let Ok(cert) = reqwest::Certificate::from_der(der.as_ref()) {
+            certs.push(cert);
+        }
+    }
+    reqwest::Client::builder().tls_certs_only(certs)
+}
+
+/// See the Android variant above. On desktop the OS trust store is correct, so
+/// this is the plain builder.
+#[cfg(not(target_os = "android"))]
+pub fn tls_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
+}
+
 /// The per-request proxy options: the per-connection proxy plus the Vercel
 /// relay.
 #[derive(Debug, Clone, Default)]
@@ -224,10 +272,7 @@ async fn resolve_real_ip(hostname: &str) -> Option<std::net::IpAddr> {
         return Some(*ip);
     }
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .ok()?;
+    let client = tls_builder().timeout(Duration::from_secs(5)).build().ok()?;
     let resp = client
         .get("https://dns.google/resolve")
         .query(&[("name", hostname), ("type", "A")])
@@ -372,7 +417,7 @@ fn client_for(key: ClientKey) -> Result<reqwest::Client, reqwest::Error> {
     {
         return Ok(client.clone());
     }
-    let mut builder = reqwest::Client::builder()
+    let mut builder = tls_builder()
         .pool_max_idle_per_host(32)
         .pool_idle_timeout(Duration::from_secs(30));
     if key.no_redirect {
