@@ -41,19 +41,20 @@ docker run -d --name rustrouter \
   -p 20129:20129 \
   -v "$HOME/.9router:/app/data" \
   -e DATA_DIR=/app/data \
+  -e INITIAL_PASSWORD=change-me \
   ghcr.io/walujanle/rustrouter:latest
 ```
 
-Pin a version instead of `latest` with `ghcr.io/walujanle/rustrouter:0.1.1`.
+`INITIAL_PASSWORD` is the dashboard password you log in with; the built-in
+`123456` is refused through a published port, so set it (and change it in the UI
+afterward). `-p 20129:20129` is required — without it the container starts but
+the host has no route to it and the browser gets an empty response. The image is
+multi-platform (`linux/amd64`, `linux/arm64`). Pin a version instead of `latest`
+with `ghcr.io/walujanle/rustrouter:0.1.1`.
 
-`-p 20129:20129` is required. Without it the container still starts, but the
-host has no route to it and the browser gets an empty response. The image is
-multi-platform (`linux/amd64`, `linux/arm64`), so the pull resolves to your
-machine's architecture.
-
-From the repo, `docker compose up -d` does the same thing in one command (port
-and volume are already set in `docker-compose.yml`). `DOCKER.md` covers
-persistence, updates, and running as a non-root user.
+From the repo, `docker compose up -d` does the same thing in one command; set
+`INITIAL_PASSWORD` in the environment to override the default. `DOCKER.md` covers
+login, persistence, updates, and running as a non-root user.
 
 ## Run
 

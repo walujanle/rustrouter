@@ -12,6 +12,13 @@ All notable changes to this project are documented here. Format follows
 - The README now carries a Docker quick start. It calls out the required
   `-p 20129:20129`: without it the container starts but nothing on the host can
   reach it, which reads as an empty response in the browser.
+- `DOCKER.md` and the README document the dashboard login, folded into the
+  Docker quick start so there is one command to run. A container reached through
+  a published port is not loopback — Docker's NAT makes the browser arrive from
+  the bridge gateway — so the built-in `123456` is refused with "Default
+  password must be changed before remote access". `INITIAL_PASSWORD` is the
+  bootstrap that works; it is listed in `.env.example` and wired into
+  `docker-compose.yml` with a default.
 
 ### Fixed
 

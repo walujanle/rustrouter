@@ -11,6 +11,9 @@ services:
       DATA_DIR: /app/data
       PORT: "20129"
       HOSTNAME: "0.0.0.0"
+      # Dashboard login. Override it: `INITIAL_PASSWORD=secret docker compose up -d`.
+      # The built-in default 123456 is refused through a published port.
+      INITIAL_PASSWORD: "${INITIAL_PASSWORD:-change-me}"
 
 volumes:
   rustrouter-data:

@@ -18,12 +18,31 @@ docker run -d \
   -p 20129:20129 \
   -v "$HOME/.9router:/app/data" \
   -e DATA_DIR=/app/data \
+  -e INITIAL_PASSWORD='choose-something-strong' \
   --name rustrouter \
   ghcr.io/walujanle/rustrouter:latest
 ```
 
 The dashboard is at http://localhost:20129, the OpenAI-compatible API at
 `http://localhost:20129/v1`.
+
+`INITIAL_PASSWORD` is the dashboard password you log in with. The built-in
+default, `123456`, is refused to any client the server does not see as loopback
+— handing out a session for a well-known password would let a remote caller turn
+authentication off. A container reached through a published port is never
+loopback: Docker's NAT makes the browser's connection arrive from the bridge
+gateway (`172.17.0.1`), not `127.0.0.1`. Without `INITIAL_PASSWORD` the login
+page answers:
+
+```
+Default password must be changed before remote access.
+Change it from the local machine (or set INITIAL_PASSWORD).
+```
+
+Change the password in the UI once you are in. The stored hash then takes over
+and `INITIAL_PASSWORD` is ignored, so the value on the container is only ever
+the bootstrap one — leaving it set is harmless. On a `DATA_DIR` that already
+holds a changed password it does nothing at all.
 
 ## Manage the container
 
@@ -85,6 +104,8 @@ docker run -d \
 
 `HOSTNAME` has to stay `0.0.0.0`. The gateway reads `HOSTNAME` to decide what to bind, and Docker
 sets that variable to the container id, so leaving it unset inside a container makes the bind fail.
+`PORT` and `HOSTNAME` already default to these values in the image; they are shown for clarity.
+Add `-e INITIAL_PASSWORD=...` here too if you want to log in (see Quick start).
 
 ## Update
 
