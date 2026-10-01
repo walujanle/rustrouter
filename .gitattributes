@@ -1,0 +1,24 @@
+# Normalise line endings on commit so the repo stores LF everywhere. Windows
+# checkouts get CRLF back, which is what `.bat` files need to run and what the
+# tooling already writes.
+* text=auto eol=lf
+
+# Windows batch files must keep CRLF in the working tree.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Shell scripts must keep LF, or they fail to execute on Linux/macOS with a
+# "bad interpreter" error.
+*.sh text eol=lf
+
+# Binary assets: never touch.
+*.png binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+
+# Data tables: hand-edited JSON, collapsed in diffs and language stats.
+crates/router-sse/src/providers/registry.json linguist-generated=true
+crates/router-sse/src/catalog/catalog.json linguist-generated=true

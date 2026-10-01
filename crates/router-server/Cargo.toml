@@ -1,0 +1,41 @@
+[package]
+name = "router-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "axum HTTP surface: /v1*, dashboard /api/*, auth, OAuth flows, CLI-tool writers"
+
+[dependencies]
+async-stream.workspace = true
+async-trait.workspace = true
+axum = { version = "0.8.9", features = ["ws", "macros", "multipart", "json", "query", "form", "http2", "tokio", "matched-path", "original-uri", "tower-log", "tracing"] }
+base64.workspace = true
+bcrypt = "0.19.3"
+bytes.workspace = true
+chrono.workspace = true
+dashmap.workspace = true
+dirs.workspace = true
+futures.workspace = true
+hmac.workspace = true
+http = "1.5.0"
+mime_guess = "2.0.5"
+rand = "0.9.5"
+regex.workspace = true
+reqwest = { workspace = true, default-features = false, features = ["rustls", "http2", "json", "multipart", "socks", "stream", "charset", "gzip", "brotli", "deflate", "zstd", "cookies", "system-proxy"] }
+router-db.workspace = true
+router-sse.workspace = true
+rust-embed = "8.12.0"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["preserve_order"] }
+sha2 = "0.10.9"
+subtle.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "fs", "process", "net", "time", "sync"] }
+toml_edit = "0.25.15"
+tower = { version = "0.5.3", features = ["util", "timeout", "limit", "load-shed"] }
+tower-http = { version = "0.6.11", features = ["fs", "trace", "cors", "compression-gzip", "compression-br", "compression-zstd", "compression-deflate", "decompression-gzip", "decompression-br", "decompression-zstd", "decompression-deflate", "limit", "timeout", "request-id", "catch-panic", "set-header", "normalize-path"] }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt", "json"] }
+url.workspace = true
+uuid.workspace = true
+which = "8.0.6"

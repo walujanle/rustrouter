@@ -1,0 +1,383 @@
+name: Build and Push Docker Image
+
+# A `v*` tag publishes the image. The tag must equal PROJECT_VERSION, which is
+# how "the commit bumped the version" is enforced: a tag whose version does not
+# match the checked-in manifest fails the prepare job instead of shipping a
+# mislabelled image.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing vX.Y.Z tag to publish"
+        required: true
+        type: string
+      promote_latest:
+        description: "Promote this republish to latest"
+        required: false
+        default: false
+        type: boolean
+
+# One FIFO queue for every release, so an older release cannot finish after a
+# newer one and move `latest` backwards.
+concurrency:
+  group: docker-publish-${{ github.repository }}
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  prepare:
+    name: Validate release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+      commit: ${{ steps.release.outputs.commit }}
+      promote_latest: ${{ steps.release.outputs.promote_latest }}
+      ghcr_image: ${{ steps.release.outputs.ghcr_image }}
+
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref_name }}
+          fetch-depth: 1
+
+      - name: Validate tag and version
+        id: release
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+          EVENT_NAME: ${{ github.event_name }}
+          PROMOTE_LATEST_INPUT: ${{ inputs.promote_latest && 'true' || 'false' }}
+        run: |
+          set -euo pipefail
+
+          tag="$RELEASE_TAG"
+          case "$tag" in
+            *+*)
+              echo "Build metadata is not supported in Docker tags: $tag" >&2
+              exit 1
+              ;;
+          esac
+
+          version="${tag#v}"
+          if [ "$version" = "$tag" ]; then
+            echo "Expected a v-prefixed tag like v0.1.0, received: $tag" >&2
+            exit 1
+          fi
+          if ! printf '%s' "$version" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$'; then
+            echo "Expected a Docker-safe semver tag like v0.1.0 or v0.1.0-rc.1, received: $tag" >&2
+            exit 1
+          fi
+
+          # PROJECT_VERSION is the single version source; the release workflow
+          # asserts the same agreement, so the two cannot drift.
+          file_version="$(tr -d '[:space:]' < PROJECT_VERSION)"
+          if [ "$file_version" != "$version" ]; then
+            echo "PROJECT_VERSION ($file_version) does not match tag ($tag)" >&2
+            exit 1
+          fi
+          node scripts/set-version.mjs --check
+
+          commit="$(git rev-parse HEAD)"
+          case "$version" in
+            *-*) is_prerelease=true ;;
+            *) is_prerelease=false ;;
+          esac
+          if [ "$EVENT_NAME" = "push" ] && [ "$is_prerelease" = "false" ]; then
+            promote_latest=true
+          elif [ "$PROMOTE_LATEST_INPUT" = "true" ]; then
+            promote_latest=true
+          else
+            promote_latest=false
+          fi
+
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "commit=$commit"
+            echo "promote_latest=$promote_latest"
+            echo "ghcr_image=ghcr.io/${GITHUB_REPOSITORY,,}"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Validated $tag at $commit"
+          echo "latest promotion: $promote_latest"
+
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      GHCR_IMAGE: ${{ needs.prepare.outputs.ghcr_image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            suffix: amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            suffix: arm64
+            runner: ubuntu-24.04-arm
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Check out release source at validated commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          path: source
+          fetch-depth: 1
+
+      # The Dockerfile and the ignore file come from the workflow revision, not
+      # from the release commit, so a manual republish of an older tag picks up
+      # the current build recipe.
+      - name: Check out publishing files
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: workflow
+          sparse-checkout: |
+            Dockerfile
+            .dockerignore
+          fetch-depth: 1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push platform image by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: source
+          file: workflow/Dockerfile
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.GHCR_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          build-args: |
+            APP_VERSION=${{ needs.prepare.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ needs.prepare.outputs.commit }}
+            org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
+          cache-from: type=gha,scope=rustrouter-${{ matrix.suffix }}
+          cache-to: type=gha,mode=max,scope=rustrouter-${{ matrix.suffix }}
+          provenance: false
+          sbom: false
+
+      # /api/health is answered on loopback, so it cannot tell whether the image
+      # can reach an upstream provider. The trust store is the one runtime
+      # dependency that fails silently in a slim base: without it every HTTPS
+      # client fails at construction and the gateway only breaks against real
+      # providers, not against the health probe.
+      - name: Verify runtime trust store
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -Eeuo pipefail
+          docker run --rm \
+            --platform "$PLATFORM" \
+            --entrypoint sh \
+            "${GHCR_IMAGE}@${IMAGE_DIGEST}" \
+            -c 'test -s /etc/ssl/certs/ca-certificates.crt'
+          echo "${PLATFORM} CA bundle present"
+
+      - name: Smoke-test platform image
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+
+          container="rustrouter-smoke-${GITHUB_RUN_ID}-${{ matrix.suffix }}"
+          trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
+
+          docker run --detach \
+            --name "$container" \
+            --platform "$PLATFORM" \
+            --publish 20129:20129 \
+            "${GHCR_IMAGE}@${IMAGE_DIGEST}"
+
+          for attempt in {1..45}; do
+            if curl --fail --silent --show-error http://127.0.0.1:20129/api/health; then
+              echo "${PLATFORM} health check passed"
+              exit 0
+            fi
+            if (( attempt % 5 == 0 )); then
+              echo "Waiting for ${PLATFORM} health check (${attempt}/45)" >&2
+            fi
+            sleep 2
+          done
+
+          echo "${PLATFORM} health check failed; container logs follow:" >&2
+          docker logs "$container" || true
+          exit 1
+
+      - name: Save image digest
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          test -n "$IMAGE_DIGEST"
+          mkdir -p "$RUNNER_TEMP/digests"
+          printf '%s\n' "$IMAGE_DIGEST" > "$RUNNER_TEMP/digests/${{ matrix.suffix }}.txt"
+
+      - name: Upload image digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.suffix }}
+          path: ${{ runner.temp }}/digests/${{ matrix.suffix }}.txt
+          if-no-files-found: error
+
+  publish:
+    name: Publish and verify manifest
+    needs:
+      - prepare
+      - build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      GHCR_IMAGE: ${{ needs.prepare.outputs.ghcr_image }}
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Download platform digests
+        uses: actions/download-artifact@v4
+        with:
+          pattern: digests-*
+          path: ${{ runner.temp }}/digests
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and verify version manifest
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          digest_files=("$RUNNER_TEMP"/digests/*.txt)
+
+          if [[ "${#digest_files[@]}" -ne 2 ]]; then
+            echo "Expected two platform digests, found ${#digest_files[@]}" >&2
+            exit 1
+          fi
+
+          sources=()
+          for digest_file in "${digest_files[@]}"; do
+            digest="$(tr -d '\n' < "$digest_file")"
+            if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "Invalid image digest in $digest_file: $digest" >&2
+              exit 1
+            fi
+            sources+=("${GHCR_IMAGE}@${digest}")
+          done
+
+          docker buildx imagetools create \
+            --tag "${GHCR_IMAGE}:${VERSION}" \
+            "${sources[@]}"
+
+          docker buildx imagetools inspect --raw "${GHCR_IMAGE}:${VERSION}" > "$RUNNER_TEMP/version-manifest.json"
+
+          expected=$'linux/amd64\nlinux/arm64'
+          actual="$(jq -r '[.manifests[] | select(.platform != null and .platform.os != null and .platform.architecture != null) | "\(.platform.os)/\(.platform.architecture)"] | sort | .[]' "$RUNNER_TEMP/version-manifest.json")"
+          if [[ "$actual" != "$expected" ]]; then
+            echo "Version manifest platforms do not match exactly:" >&2
+            printf '%s\n' "$actual" >&2
+            exit 1
+          fi
+
+      - name: Smoke-test resolved version manifest
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -Eeuo pipefail
+          container="rustrouter-manifest-smoke-${GITHUB_RUN_ID}"
+          trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
+
+          docker run --detach \
+            --name "$container" \
+            --platform linux/amd64 \
+            --publish 20129:20129 \
+            "${GHCR_IMAGE}:${VERSION}"
+
+          for attempt in {1..30}; do
+            if curl --fail --silent --show-error http://127.0.0.1:20129/api/health; then
+              echo "Resolved version manifest health check passed"
+              exit 0
+            fi
+            if (( attempt % 5 == 0 )); then
+              echo "Waiting for resolved manifest health check (${attempt}/30)" >&2
+            fi
+            sleep 2
+          done
+
+          echo "Resolved version manifest health check failed; container logs follow:" >&2
+          docker logs "$container" || true
+          exit 1
+
+      - name: Promote verified version to latest
+        if: needs.prepare.outputs.promote_latest == 'true'
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            --tag "${GHCR_IMAGE}:latest" \
+            "${GHCR_IMAGE}:${VERSION}"
+
+          docker buildx imagetools inspect --raw "${GHCR_IMAGE}:latest" > "$RUNNER_TEMP/latest-manifest.json"
+
+          expected=$'linux/amd64\nlinux/arm64'
+          actual="$(jq -r '[.manifests[] | select(.platform != null and .platform.os != null and .platform.architecture != null) | "\(.platform.os)/\(.platform.architecture)"] | sort | .[]' "$RUNNER_TEMP/latest-manifest.json")"
+          if [[ "$actual" != "$expected" ]]; then
+            echo "GHCR latest manifest platforms do not match exactly:" >&2
+            printf '%s\n' "$actual" >&2
+            exit 1
+          fi
+
+          {
+            echo "### Published Docker images"
+            echo "- \`${GHCR_IMAGE}:${VERSION}\`"
+            echo "- \`${GHCR_IMAGE}:latest\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Record latest promotion policy
+        if: needs.prepare.outputs.promote_latest != 'true'
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          {
+            echo "### Published Docker images"
+            echo "- \`${GHCR_IMAGE}:${VERSION}\`"
+            echo "- \`latest\` left unchanged (prerelease or manual republish without opt-in)"
+          } >> "$GITHUB_STEP_SUMMARY"

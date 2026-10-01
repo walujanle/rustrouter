@@ -1,0 +1,17 @@
+services:
+  rustrouter:
+    image: ghcr.io/walujanle/rustrouter:latest
+    container_name: rustrouter
+    restart: always
+    ports:
+      - "20129:20129"
+    volumes:
+      - rustrouter-data:/app/data
+    environment:
+      DATA_DIR: /app/data
+      PORT: "20129"
+      HOSTNAME: "0.0.0.0"
+
+volumes:
+  rustrouter-data:
+    name: rustrouter-data

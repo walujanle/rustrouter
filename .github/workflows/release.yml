@@ -1,0 +1,230 @@
+name: Release
+
+# A `v*` tag cuts a release: six platform binaries attached to a GitHub
+# Release, then the npm packages published. `workflow_dispatch` runs the same
+# build without publishing, so a leg can be exercised without burning a version.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      is_tag: ${{ steps.version.outputs.is_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Resolve version and assert tag agreement
+        id: version
+        run: |
+          version="$(tr -d '[:space:]' < PROJECT_VERSION)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "is_tag=true" >> "$GITHUB_OUTPUT"
+            tag="${GITHUB_REF_NAME#v}"
+            if [ "$tag" != "$version" ]; then
+              echo "tag $GITHUB_REF_NAME does not match PROJECT_VERSION $version" >&2
+              exit 1
+            fi
+          else
+            echo "is_tag=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Assert every manifest agrees with PROJECT_VERSION
+        run: node scripts/set-version.mjs --check
+
+  frontend:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        working-directory: web
+      - run: npm run build
+        working-directory: web
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+          if-no-files-found: error
+
+  build:
+    needs: [verify, frontend]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-amd64
+            os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            asset: rustrouter-linux-amd64
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            asset: rustrouter-linux-arm64
+          - name: linux-android-aarch64
+            os: ubuntu-24.04-arm
+            target: aarch64-linux-android
+            asset: rustrouter-linux-android-aarch64
+            android: true
+          - name: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            asset: rustrouter-macos-arm64
+          - name: windows-x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: rustrouter-windows-x64
+            ext: .exe
+          - name: windows-arm64
+            os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            asset: rustrouter-windows-arm64
+            ext: .exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.name }}
+
+      # aws-lc-sys (the rustls backend) compiles C and assembly with cmake, so
+      # the Linux legs need a C toolchain and cmake before cargo runs.
+      - name: Install Linux build tools
+        if: runner.os == 'Linux' && !matrix.android
+        run: sudo apt-get update && sudo apt-get install -y cmake clang
+      - name: Install macOS build tools
+        if: runner.os == 'macOS'
+        run: brew install cmake || true
+
+      - name: Build (native)
+        if: ${{ !matrix.android }}
+        shell: bash
+        run: cargo build --release --locked --target ${{ matrix.target }} -p rustrouter
+
+      # The Android target needs the NDK's clang as linker for every C crate;
+      # cargo-ndk sets that up. The NDK ships on the runner image.
+      - name: Install cargo-ndk
+        if: ${{ matrix.android }}
+        run: cargo install cargo-ndk --locked
+      - name: Build (android)
+        if: ${{ matrix.android }}
+        run: cargo ndk -t arm64-v8a build --release --locked -p rustrouter
+
+      - name: Package asset
+        shell: bash
+        run: |
+          version="${{ needs.verify.outputs.version }}"
+          asset="${{ matrix.asset }}-${version}${{ matrix.ext }}"
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/rustrouter${{ matrix.ext }}" "dist/$asset"
+          if command -v sha256sum >/dev/null; then
+            sha256sum "dist/$asset" | cut -d' ' -f1 > "dist/$asset.sha256"
+          else
+            shasum -a 256 "dist/$asset" | cut -d' ' -f1 > "dist/$asset.sha256"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    needs: [verify, build]
+    if: needs.verify.outputs.is_tag == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: binary-*
+          path: dist
+          merge-multiple: true
+      - name: Build release notes from the changelog
+        run: node scripts/extract-changelog.mjs "${{ needs.verify.outputs.version }}" > notes.md
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v${{ needs.verify.outputs.version }}" dist/* \
+            --title "v${{ needs.verify.outputs.version }}" \
+            --notes-file notes.md \
+            --verify-tag
+
+  # Publishing uses npm Trusted Publishing (OIDC): no stored token. Each package
+  # needs its trusted publisher configured on npmjs.com once — see
+  # docs/RELEASING.md, including the one-time bootstrap for a brand-new name.
+  publish-npm:
+    needs: [verify, release]
+    if: needs.verify.outputs.is_tag == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.21.0
+          registry-url: https://registry.npmjs.org
+      - name: Ensure npm supports trusted publishing
+        # Pinned: `latest` would float the publish toolchain between runs.
+        # 11.5.1 is the floor for trusted publishing; this is the 11.x head.
+        run: npm install -g npm@11.20.0 && npm --version
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: binary-*
+          path: dist
+          merge-multiple: true
+      - name: Assemble platform packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ needs.verify.outputs.version }}"
+          place() { # <package dir> <binary name in dist> <output name>
+            mkdir -p "npm/platforms/$1/bin"
+            cp "dist/$2" "npm/platforms/$1/bin/$3"
+            chmod +x "npm/platforms/$1/bin/$3"
+          }
+          place linux-x64   "rustrouter-linux-amd64-${version}"        rustrouter
+          place linux-arm64 "rustrouter-linux-arm64-${version}"        rustrouter
+          place darwin-arm64 "rustrouter-macos-arm64-${version}"       rustrouter
+          place win32-x64   "rustrouter-windows-x64-${version}.exe"    rustrouter.exe
+          place win32-arm64 "rustrouter-windows-arm64-${version}.exe"  rustrouter.exe
+      - name: Publish platform packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          for dir in linux-x64 linux-arm64 darwin-arm64 win32-x64 win32-arm64; do
+            npm publish "npm/platforms/$dir" --provenance --access public
+          done
+      - name: Publish the main package
+        run: npm publish npm --provenance --access public

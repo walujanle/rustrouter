@@ -1,0 +1,7 @@
+# Pin the toolchain so a future stable release cannot break the build or the
+# `clippy -D warnings` gate on a repo that is otherwise frozen. This is the
+# version the workspace is verified against; the MSRV floor is still 1.88
+# (`rust-version` in Cargo.toml), which `cargo +1.88.0 check` covers.
+[toolchain]
+channel = "1.97.1"
+components = ["rustfmt", "clippy"]

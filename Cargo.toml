@@ -1,0 +1,53 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/router-db",
+    "crates/router-sse",
+    "crates/router-server",
+    "crates/rustrouter",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+repository = "https://github.com/walujanle/rustrouter"
+description = "A local AI routing gateway with an OpenAI-compatible endpoint and a web dashboard"
+
+[workspace.dependencies]
+# internal
+router-db = { path = "crates/router-db" }
+router-sse = { path = "crates/router-sse" }
+router-server = { path = "crates/router-server" }
+
+# third-party, shared by more than one crate. Versions live here so a dependency
+# bump is one edit. Features are per-crate, added with `{ workspace = true, ... }`.
+async-stream = "0.3.6"
+async-trait = "0.1.92"
+base64 = "0.23.1"
+bytes = "1.12.1"
+chrono = "0.4.45"
+dashmap = "6.2.1"
+dirs = "7.0.0"
+futures = "0.3.34"
+hmac = "0.12.1"
+indexmap = "2.14.2"
+regex = "1.13.1"
+reqwest = { version = "0.13.5", default-features = false }
+serde = "1.0.229"
+serde_json = "1.0.151"
+subtle = "2.6.1"
+thiserror = "2.0.21"
+tokio = "1.53.1"
+tokio-util = "0.7.19"
+tracing = "0.1.44"
+tracing-subscriber = "0.3.23"
+url = "2.5.8"
+uuid = "1.26.1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

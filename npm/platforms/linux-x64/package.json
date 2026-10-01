@@ -1,0 +1,22 @@
+{
+	"name": "rustrouter-linux-x64",
+	"version": "0.1.0",
+	"description": "rustrouter binary for linux-x64 (glibc)",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/walujanle/rustrouter.git"
+	},
+	"os": [
+		"linux"
+	],
+	"cpu": [
+		"x64"
+	],
+	"libc": [
+		"glibc"
+	],
+	"files": [
+		"bin/rustrouter"
+	]
+}

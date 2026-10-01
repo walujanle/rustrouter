@@ -1,0 +1,30 @@
+# Rust
+/target/
+**/target/
+Cargo.lock.bak
+
+# Build output from build-production.bat
+/rustrouter-binary/
+
+# Node
+node_modules/
+**/node_modules/
+web/dist/
+
+# Binaries CI copies into the npm platform packages; never committed.
+npm/platforms/*/bin/
+npm/bin/rustrouter
+
+# Secrets and local state
+.env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+*.swp

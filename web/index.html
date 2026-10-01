@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#0a0a0a" />
+  <meta name="description"
+    content="One endpoint for all your AI providers. Route requests, manage keys, and track usage from a local dashboard." />
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="RustRouter - AI Infrastructure Management" />
+  <meta property="og:description"
+    content="One endpoint for all your AI providers. Route requests, manage keys, and track usage from a local dashboard." />
+  <meta name="twitter:card" content="summary" />
+  <title>RustRouter - AI Infrastructure Management</title>
+  <!-- Apply the persisted theme before first paint so a reload does not flash the
+       default light theme before the Pinia store hydrates. Reads the same
+       `theme` localStorage key and the `{state:{theme}}` envelope the store
+       writes, and mirrors the `dark` class it sets. -->
+  <script>
+    (() => {
+      try {
+        const s = localStorage.getItem("theme");
+        const t = (s ? JSON.parse(s).state?.theme : null) || "system";
+        const m = window.matchMedia("(prefers-color-scheme: dark)").matches;
+        if (t === "dark" || (t === "system" && m)) {
+          document.documentElement.classList.add("dark");
+        }
+      } catch {
+        /* localStorage unavailable — fall back to the default theme */
+      }
+    })();
+  </script>
+  <!-- Material Symbols are font ligatures; every icon is invisible until the
+       font loads. The 3s timeout is the only error surface, so keep it. -->
+  <script>
+    (() => {
+      const r = document.documentElement;
+      const f = () => r.classList.add("fonts-loaded");
+      if (document.fonts?.load) {
+        document.fonts.load('24px "Material Symbols Outlined"').then(f).catch(f);
+        setTimeout(f, 3000);
+      } else {
+        f();
+      }
+    })();
+  </script>
+</head>
+
+<body>
+  <!-- Without JS the SPA never mounts. Show the icon glyphs (normally hidden
+       until the font loads) and say what happened. The block lives in `body`:
+       a `noscript` in `head` may only hold link/meta/style/noframes, so the
+       `<div>` there fails HTML parsing. -->
+  <noscript>
+    <style>
+      .material-symbols-outlined {
+        opacity: 1;
+      }
+    </style>
+    <div style="font-family: system-ui, sans-serif; max-width: 40rem; margin: 4rem auto; padding: 0 1.5rem; line-height: 1.6;">
+      <h1 style="font-size: 1.5rem;">JavaScript is required</h1>
+      <p>
+        The RustRouter dashboard is a single-page app and needs JavaScript to
+        render. The routing API itself (<code>/v1/*</code>) is a plain HTTP
+        endpoint and keeps working without a browser — point your client at it
+        directly.
+      </p>
+      <p>Enable JavaScript and reload to use the dashboard.</p>
+    </div>
+  </noscript>
+  <div id="app"></div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+
+</html>

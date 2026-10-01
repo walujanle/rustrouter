@@ -1,0 +1,40 @@
+# VCS
+.git
+**/.git
+
+# Editor
+.vscode
+**/.vscode
+.idea
+
+# Rust build output: the image compiles from source, so a local target dir only
+# bloats the build context.
+target
+**/target
+
+# Node build output. `web/dist` is rebuilt in the `web` stage; shipping the
+# host copy would bake whatever happened to be on disk into the binary.
+node_modules
+**/node_modules
+web/dist
+
+# CI copies release binaries here; the image never uses them.
+rustrouter-binary
+npm/platforms/*/bin
+
+# Runtime data and local secrets (inject at runtime via -e or --env-file)
+data
+logs
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+.env
+.env.*
+!.env.example
+
+# Docs and CI metadata that the build does not read
+docs
+.github
+CHANGELOG.md
+DOCKER.md
+*.md

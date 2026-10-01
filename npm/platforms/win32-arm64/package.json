@@ -1,0 +1,19 @@
+{
+	"name": "rustrouter-win32-arm64",
+	"version": "0.1.0",
+	"description": "rustrouter binary for win32-arm64",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/walujanle/rustrouter.git"
+	},
+	"os": [
+		"win32"
+	],
+	"cpu": [
+		"arm64"
+	],
+	"files": [
+		"bin/rustrouter.exe"
+	]
+}

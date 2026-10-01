@@ -1,0 +1,19 @@
+{
+	"name": "rustrouter-darwin-arm64",
+	"version": "0.1.0",
+	"description": "rustrouter binary for darwin-arm64 (Apple silicon)",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/walujanle/rustrouter.git"
+	},
+	"os": [
+		"darwin"
+	],
+	"cpu": [
+		"arm64"
+	],
+	"files": [
+		"bin/rustrouter"
+	]
+}

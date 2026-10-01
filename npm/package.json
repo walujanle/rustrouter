@@ -1,0 +1,31 @@
+{
+	"name": "rustrouter",
+	"version": "0.1.0",
+	"description": "Local AI routing gateway plus dashboard: one OpenAI-compatible endpoint across upstream providers",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/walujanle/rustrouter.git"
+	},
+	"homepage": "https://github.com/walujanle/rustrouter",
+	"bin": {
+		"rustrouter": "bin/rustrouter.js"
+	},
+	"files": [
+		"bin/rustrouter.js",
+		"scripts/postinstall.js"
+	],
+	"scripts": {
+		"postinstall": "node scripts/postinstall.js"
+	},
+	"optionalDependencies": {
+		"rustrouter-linux-x64": "0.1.0",
+		"rustrouter-linux-arm64": "0.1.0",
+		"rustrouter-darwin-arm64": "0.1.0",
+		"rustrouter-win32-x64": "0.1.0",
+		"rustrouter-win32-arm64": "0.1.0"
+	},
+	"engines": {
+		"node": ">=18"
+	}
+}

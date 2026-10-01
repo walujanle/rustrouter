@@ -1,0 +1,110 @@
+# rustrouter
+
+A local AI routing gateway, written in Rust, with a Vue 3 dashboard. One
+OpenAI-compatible endpoint (`/v1/*`) fans out across the upstream providers you
+configure, with format translation, model-combo fallback, multi-account
+fallback, OAuth and API-key credential management, token refresh, usage
+tracking, and an optional quota tracker.
+
+rustrouter listens on **20129**. It shares one SQLite file with
+[9router](https://github.com/decolua/9router) using a byte-identical schema, so a
+database can move between the two installs with no migration step — and the two
+can run side by side.
+
+## Install
+
+```bash
+npm install -g rustrouter
+```
+
+The npm package ships a JS shim plus one platform binary per OS/arch. On
+Termux, where npm reports `linux/arm64` but the glibc binary will not load under
+Bionic, the postinstall script downloads the Android asset and verifies its
+sha256 against the GitHub Release before swapping it in.
+
+Or build from source:
+
+```bash
+cargo build --release      # embeds web/dist into the binary
+./build.sh                 # or build.bat on Windows: frontend first, then cargo
+```
+
+## Run
+
+```bash
+rustrouter serve           # run in the foreground
+rustrouter start           # kill whatever holds the port, run, restart on crash
+rustrouter stop            # stop the process holding the port
+rustrouter --port 8080     # override the port (also -p / -H)
+```
+
+Then open `http://localhost:20129/dashboard`, add a provider, and point your
+client at `http://localhost:20129/v1`.
+
+## What it does
+
+- **One endpoint, many providers.** Requests in OpenAI, Anthropic, Gemini, or
+  Responses format are translated to whatever the selected provider speaks and
+  back again.
+- **Fallback.** A failed model falls through a combo to the next model, and a
+  failed account falls through to the next connection for that provider.
+- **Credentials.** OAuth flows for the providers that need them, API keys for
+  the rest, proactive and reactive token refresh, and per-model cooldown after
+  an upstream error.
+- **Usage.** Token and cost accounting per provider, model, and account, written
+  to the shared SQLite tables.
+- **Optional quota tracker.** Disables a connection when its quota is exhausted
+  and re-enables it when usage is available again. Off by default.
+
+Everything is local. There is no cloud sync and no telemetry. A container image
+is published to GHCR for those who want one (`DOCKER.md`), but the binary has no
+runtime dependency on Docker or Node.
+
+## Layout
+
+```
+crates/
+  router-db/       SQLite: schema, migrations, repos. The shared-schema boundary.
+  router-sse/      Registry data, translators, executors, chat pipeline. No HTTP.
+  router-server/   axum: /v1*, dashboard /api/*, auth, OAuth, static assets.
+  rustrouter/      bin: clap (serve | start | stop | update-check)
+web/               Vue 3 + Vite + Tailwind + Biome dashboard
+npm/               the published npm package tree
+scripts/           set-version.mjs, extract-changelog.mjs
+docs/              design docs; start at docs/README.md
+```
+
+`PROJECT_VERSION` at the root is the single version source; `node
+scripts/set-version.mjs` propagates it into every manifest. Cutting a release is
+`docs/RELEASING.md`.
+
+## Build and verify
+
+```bash
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all --check
+cargo audit
+
+cd web && npm run build       # vue-tsc -b && biome check && vite build
+cd web && ./node_modules/.bin/biome ci
+cd web && npm audit
+```
+
+Toolchain floor is Rust 1.88 (`edition = "2024"`). TypeScript is held at 6.x:
+`vue-tsc` 3.3 needs TypeScript's `./lib/tsc` export, which TypeScript 7 removes.
+
+## Contributing
+
+`AGENTS.md` has the rules that are easy to get wrong (JSON byte parity, date
+formats, the registry, the shared database). Read it before changing
+anything structural; the per-area docs it points to are the next step.
+
+## Security
+
+`SECURITY.md` covers the trust model, the accepted risks, and what the gateway
+stores and logs. Report anything exploitable privately, not in a public issue.
+
+## License
+
+MIT.
