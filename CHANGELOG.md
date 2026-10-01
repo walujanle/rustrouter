@@ -7,6 +7,12 @@ All notable changes to this project are documented here. Format follows
 
 ## [0.1.1] - 2026-10-01
 
+### Added
+
+- The README now carries a Docker quick start. It calls out the required
+  `-p 20129:20129`: without it the container starts but nothing on the host can
+  reach it, which reads as an empty response in the browser.
+
 ### Fixed
 
 - `get_executor` no longer races on a cold provider key. It did a `get` then an

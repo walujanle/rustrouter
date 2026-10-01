@@ -29,6 +29,32 @@ cargo build --release      # embeds web/dist into the binary
 ./build.sh                 # or build.bat on Windows: frontend first, then cargo
 ```
 
+### Docker
+
+Every release publishes a ready-to-run image to GHCR, so there is nothing to
+build — pull it and run it:
+
+```bash
+docker pull ghcr.io/walujanle/rustrouter:latest
+
+docker run -d --name rustrouter \
+  -p 20129:20129 \
+  -v "$HOME/.9router:/app/data" \
+  -e DATA_DIR=/app/data \
+  ghcr.io/walujanle/rustrouter:latest
+```
+
+Pin a version instead of `latest` with `ghcr.io/walujanle/rustrouter:0.1.1`.
+
+`-p 20129:20129` is required. Without it the container still starts, but the
+host has no route to it and the browser gets an empty response. The image is
+multi-platform (`linux/amd64`, `linux/arm64`), so the pull resolves to your
+machine's architecture.
+
+From the repo, `docker compose up -d` does the same thing in one command (port
+and volume are already set in `docker-compose.yml`). `DOCKER.md` covers
+persistence, updates, and running as a non-root user.
+
 ## Run
 
 ```bash
