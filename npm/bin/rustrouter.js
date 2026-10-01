@@ -34,7 +34,13 @@ function resolveBinary() {
 	return path.join(__dirname, binary);
 }
 
-const result = spawnSync(resolveBinary(), process.argv.slice(2), { stdio: "inherit" });
+// Tell the binary it was installed through npm so its update prompt offers the
+// npm command. Set here because this shim is the only thing that knows the
+// install channel; the server cannot tell npm from a direct binary on its own.
+const result = spawnSync(resolveBinary(), process.argv.slice(2), {
+	stdio: "inherit",
+	env: { ...process.env, RUSTROUTER_INSTALL_METHOD: "npm" },
+});
 if (result.error) {
 	console.error(`rustrouter: failed to launch binary: ${result.error.message}`);
 	process.exit(1);

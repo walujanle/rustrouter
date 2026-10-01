@@ -5,7 +5,20 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- The update prompt follows how rustrouter was installed. `GET /api/version` reports a new
+  `installMethod` (`docker` | `npm` | `binary`), and `installCmd` is the command for that channel
+  instead of the hardcoded npm string. The sidebar and the Settings page show a Docker update
+  (pull the image, remove the container), the npm command, or a link to the latest GitHub release
+  for a direct binary. `rustrouter update-check` prints the same method and command offline.
+
 ### Fixed
+
+- A Docker install no longer reports a permanent "update available". The image's binary is
+  compiled inside the image, so its hash can never match the release asset's digest; the
+  `binaryChanged` signal made the banner nag on every container even when it was up to date. The
+  signal is now suppressed for Docker, where the release asset is not the running binary at all.
 
 - Outbound HTTPS no longer panics on Android/Termux with
   `Expect rustls-platform-verifier to be initialized`. `reqwest`'s `rustls`

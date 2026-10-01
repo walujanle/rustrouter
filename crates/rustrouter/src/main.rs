@@ -159,8 +159,24 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             Ok(())
         }
         Command::UpdateCheck => {
+            use router_server::services::update_check::{InstallMethod, install_method};
             println!("rustrouter {}", router_server::APP_VERSION);
-            println!("update-check: runs in the server; see /api/version");
+            let method = install_method();
+            println!("install: {}", method.as_str());
+            match method {
+                InstallMethod::Docker => {
+                    println!("update:  docker pull ghcr.io/walujanle/rustrouter:latest");
+                    println!("         docker rm -f rustrouter");
+                    println!(
+                        "         then re-run your original run command, or `docker compose up -d`"
+                    );
+                    println!("         (a pinned tag: substitute it for `latest`)");
+                }
+                InstallMethod::Npm => println!("update:  npm i -g rustrouter@latest"),
+                InstallMethod::Binary => {
+                    println!("update:  https://github.com/walujanle/rustrouter/releases/latest");
+                }
+            }
             Ok(())
         }
     }

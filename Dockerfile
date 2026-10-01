@@ -51,7 +51,8 @@ LABEL org.opencontainers.image.title="rustrouter" \
 # rustrouter runs on 20129.
 ENV PORT=20129 \
     HOSTNAME=0.0.0.0 \
-    DATA_DIR=/app/data
+    DATA_DIR=/app/data \
+    RUSTROUTER_INSTALL_METHOD=docker
 
 COPY --from=build /usr/local/bin/rustrouter /usr/local/bin/rustrouter
 

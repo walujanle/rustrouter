@@ -17,9 +17,22 @@ const settingsStore = useSettingsStore();
 const { MEDIA_PROVIDER_KINDS } = useProviders();
 const { copied, copy } = useCopyToClipboard(2000);
 
-const INSTALL_CMD = UPDATER_CONFIG.installCmdLatest;
+type InstallMethod = "docker" | "npm" | "binary";
 
-const updateInfo = ref<{ latestVersion?: string } | null>(null);
+const updateInfo = ref<{
+	latestVersion?: string;
+	installMethod?: InstallMethod;
+	installCmd?: string | null;
+	releaseUrl?: string | null;
+} | null>(null);
+
+// Old servers do not send installMethod/installCmd, so fall back to the npm
+// command they used to hardcode.
+const installMethod = computed<InstallMethod>(() => updateInfo.value?.installMethod ?? "npm");
+const installCmd = computed(() => updateInfo.value?.installCmd ?? UPDATER_CONFIG.installCmdLatest);
+const releaseUrl = computed(() => updateInfo.value?.releaseUrl ?? null);
+const isDocker = computed(() => installMethod.value === "docker");
+const isBinary = computed(() => installMethod.value === "binary");
 const autoUpdateCheck = ref(true);
 const showUpdateModal = ref(false);
 const isUpdating = ref(false);
@@ -114,11 +127,11 @@ function handleUpdate() {
 
 async function handleCopyAndShutdown() {
 	try {
-		await navigator.clipboard.writeText(INSTALL_CMD);
+		await navigator.clipboard.writeText(installCmd.value);
 	} catch {
 		/* clipboard blocked */
 	}
-	copy(INSTALL_CMD);
+	copy(installCmd.value);
 	let remaining = UPDATER_CONFIG.shutdownCountdownSec;
 	shutdownCountdown.value = remaining;
 	countdownTimer = setInterval(() => {
@@ -130,6 +143,12 @@ async function handleCopyAndShutdown() {
 			isDisconnected.value = true;
 		}
 	}, 1000);
+}
+
+/** Docker and binary have no command to copy, so the modal's primary action is
+ *  just to close (docker) or open the release page (binary). */
+function openReleasePage() {
+	if (releaseUrl.value) globalThis.open(releaseUrl.value, "_blank", "noopener,noreferrer");
 }
 
 function handleCancelUpdate() {
@@ -172,14 +191,28 @@ function reload() {
           >
             Update now
           </button>
+          <!-- A direct binary has no command, so the quick action opens the
+               release page; docker and npm copy their command. -->
           <button
+            v-if="isBinary"
+            type="button"
+            class="flex-1 text-left hover:opacity-80 transition-opacity cursor-pointer min-w-0"
+            title="Open the release page"
+            @click="openReleasePage"
+          >
+            <code class="block text-[10px] text-green-600/80 dark:text-amber-400/70 font-mono truncate">
+              {{ releaseUrl }}
+            </code>
+          </button>
+          <button
+            v-else
             type="button"
             class="flex-1 text-left hover:opacity-80 transition-opacity cursor-pointer min-w-0"
             title="Copy install command"
-            @click="copy(INSTALL_CMD)"
+            @click="copy(installCmd)"
           >
             <code class="block text-[10px] text-green-600/80 dark:text-amber-400/70 font-mono truncate">
-              {{ copied ? "✓ copied!" : INSTALL_CMD }}
+              {{ copied ? "✓ copied!" : installCmd }}
             </code>
           </button>
         </div>
@@ -320,8 +353,14 @@ function reload() {
   <ConfirmModal
     :is-open="showUpdateModal"
     title="Update RustRouter"
-    :message="`Show install command for v${updateInfo?.latestVersion || ''}? You can copy it and shutdown to install manually.`"
-    confirm-text="Show Command"
+    :message="
+      isDocker
+        ? `Show the Docker update steps for v${updateInfo?.latestVersion || ''}?`
+        : isBinary
+          ? `Open the release page for v${updateInfo?.latestVersion || ''}?`
+          : `Show install command for v${updateInfo?.latestVersion || ''}? You can copy it and shutdown to install manually.`
+    "
+    :confirm-text="isBinary ? 'Show Release' : 'Show Command'"
     cancel-text="Cancel"
     variant="primary"
     @close="showUpdateModal = false"
@@ -332,40 +371,83 @@ function reload() {
     <div v-if="isUpdating" class="w-full max-w-lg rounded-xl bg-neutral-900/95 border border-white/10 p-6 text-white">
       <div class="flex items-center gap-3 mb-4">
         <div class="flex items-center justify-center size-11 rounded-full bg-amber-500/20 text-amber-400">
-          <span class="material-symbols-outlined text-[24px]">content_copy</span>
+          <span class="material-symbols-outlined text-[24px]">{{ isBinary ? "download" : "content_copy" }}</span>
         </div>
         <div>
           <h2 class="text-lg font-semibold">Update RustRouter{{ updateInfo?.latestVersion ? ` to v${updateInfo.latestVersion}` : "" }}</h2>
           <p class="text-xs text-white/60">
             {{
-              isDisconnected
-                ? "Server stopped. Paste the command into a terminal to install."
-                : shutdownCountdown > 0
-                  ? `Command copied. Server will stop in ${shutdownCountdown}s...`
-                  : "Click the button below to copy the install command and shutdown."
+              isDocker
+                ? "Pull the new image and recreate the container."
+                : isBinary
+                  ? "Download the asset for your platform and replace the running binary."
+                  : isDisconnected
+                    ? "Server stopped. Paste the command into a terminal to install."
+                    : shutdownCountdown > 0
+                      ? `Command copied. Server will stop in ${shutdownCountdown}s...`
+                      : "Click the button below to copy the install command and shutdown."
             }}
           </p>
         </div>
       </div>
 
-      <p class="text-sm text-white/80 mb-2">Install command:</p>
-      <div class="w-full px-3 py-2 rounded bg-white/5 mb-4">
-        <code class="text-xs font-mono text-amber-400 break-all">{{ INSTALL_CMD }}</code>
-      </div>
+      <!-- Direct binary: no command, the release page is the whole prompt. -->
+      <template v-if="isBinary">
+        <p class="text-sm text-white/80 mb-2">Latest release:</p>
+        <div class="w-full px-3 py-2 rounded bg-white/5 mb-4">
+          <code class="text-xs font-mono text-amber-400 break-all">{{ releaseUrl }}</code>
+        </div>
+        <ol class="text-xs text-white/70 space-y-1 list-decimal list-inside mb-4">
+          <li>Download the asset for your platform.</li>
+          <li>Replace the running binary.</li>
+          <li>Start <code class="px-1 rounded bg-white/10 text-green-400">rustrouter</code> again.</li>
+        </ol>
+        <div class="flex gap-2">
+          <Button variant="secondary" @click="handleCancelUpdate">Close</Button>
+          <Button variant="primary" full-width @click="openReleasePage">Open release page</Button>
+        </div>
+      </template>
 
-      <ol class="text-xs text-white/70 space-y-1 list-decimal list-inside mb-4">
-        <li>Click <strong>Copy &amp; Shutdown</strong> below.</li>
-        <li>Paste the command into your terminal and press Enter.</li>
-        <li>Run <code class="px-1 rounded bg-white/10 text-green-400">rustrouter</code> again after install.</li>
-      </ol>
+      <!-- Docker: pull + remove, then the user's own run line. No shutdown:
+           the container cannot recreate itself and restart: always would bring
+           the old one straight back. -->
+      <template v-else-if="isDocker">
+        <p class="text-sm text-white/80 mb-2">Update steps:</p>
+        <div class="w-full px-3 py-2 rounded bg-white/5 mb-4">
+          <code class="text-xs font-mono text-amber-400 break-all whitespace-pre-line">{{ installCmd }}</code>
+        </div>
+        <ol class="text-xs text-white/70 space-y-1 list-decimal list-inside mb-4">
+          <li>Run the commands above on the Docker host.</li>
+          <li>Start the container again with your original <code class="px-1 rounded bg-white/10 text-green-400">docker run</code> command, or <code class="px-1 rounded bg-white/10 text-green-400">docker compose up -d</code>.</li>
+          <li>If you pinned a version tag, substitute it for <code class="px-1 rounded bg-white/10 text-green-400">:latest</code>.</li>
+        </ol>
+        <div class="flex gap-2">
+          <Button variant="secondary" @click="handleCancelUpdate">Close</Button>
+          <Button variant="primary" full-width @click="copy(installCmd)">{{ copied ? "✓ Copied!" : "Copy commands" }}</Button>
+        </div>
+      </template>
 
-      <Button v-if="isDisconnected" variant="secondary" full-width @click="reload">Reload Page</Button>
-      <div v-else class="flex gap-2">
-        <Button variant="secondary" :disabled="shutdownCountdown > 0" @click="handleCancelUpdate">Cancel</Button>
-        <Button variant="primary" full-width :disabled="shutdownCountdown > 0" @click="handleCopyAndShutdown">
-          {{ copied ? "✓ Copied — shutting down..." : shutdownCountdown > 0 ? `Shutting down in ${shutdownCountdown}s` : "Copy & Shutdown" }}
-        </Button>
-      </div>
+      <!-- npm: unchanged copy-and-shutdown flow. -->
+      <template v-else>
+        <p class="text-sm text-white/80 mb-2">Install command:</p>
+        <div class="w-full px-3 py-2 rounded bg-white/5 mb-4">
+          <code class="text-xs font-mono text-amber-400 break-all">{{ installCmd }}</code>
+        </div>
+
+        <ol class="text-xs text-white/70 space-y-1 list-decimal list-inside mb-4">
+          <li>Click <strong>Copy &amp; Shutdown</strong> below.</li>
+          <li>Paste the command into your terminal and press Enter.</li>
+          <li>Run <code class="px-1 rounded bg-white/10 text-green-400">rustrouter</code> again after install.</li>
+        </ol>
+
+        <Button v-if="isDisconnected" variant="secondary" full-width @click="reload">Reload Page</Button>
+        <div v-else class="flex gap-2">
+          <Button variant="secondary" :disabled="shutdownCountdown > 0" @click="handleCancelUpdate">Cancel</Button>
+          <Button variant="primary" full-width :disabled="shutdownCountdown > 0" @click="handleCopyAndShutdown">
+            {{ copied ? "✓ Copied — shutting down..." : shutdownCountdown > 0 ? `Shutting down in ${shutdownCountdown}s` : "Copy & Shutdown" }}
+          </Button>
+        </div>
+      </template>
     </div>
 
     <div v-else class="text-center p-8">

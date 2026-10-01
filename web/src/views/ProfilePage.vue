@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import ConfirmModal from "@/components/ui/ConfirmModal.vue";
 import Button from "@/components/ui/UiButton.vue";
 import Card from "@/components/ui/UiCard.vue";
@@ -37,7 +37,24 @@ const proxyLoading = ref(false);
 const proxyTestLoading = ref(false);
 
 const isRemoteHost = ref(false);
-const updateStatus = ref<{ latestVersion?: string | null; checkedAt?: string | null }>({});
+const updateStatus = ref<{
+	latestVersion?: string | null;
+	checkedAt?: string | null;
+	installMethod?: "docker" | "npm" | "binary" | null;
+	releaseUrl?: string | null;
+}>({});
+const installMethodLabel = computed(() => {
+	switch (updateStatus.value.installMethod) {
+		case "docker":
+			return "Docker";
+		case "npm":
+			return "npm";
+		case "binary":
+			return "direct binary";
+		default:
+			return null;
+	}
+});
 
 onMounted(() => {
 	isRemoteHost.value = !["localhost", "127.0.0.1", "::1"].includes(window.location.hostname);
@@ -759,7 +776,18 @@ async function handleLogout(): Promise<void> {
           </div>
           <div class="text-xs sm:text-sm text-text-muted pt-4 border-t border-border/50 flex flex-col gap-1">
             <p>Current: v{{ APP_CONFIG.version }}</p>
-            <p>Latest: {{ updateStatus.latestVersion ? `v${updateStatus.latestVersion}` : "unknown" }}</p>
+            <p v-if="installMethodLabel">Installed via: {{ installMethodLabel }}</p>
+            <p>
+              Latest:
+              <a
+                v-if="updateStatus.installMethod === 'binary' && updateStatus.releaseUrl"
+                :href="updateStatus.releaseUrl"
+                target="_blank"
+                rel="noreferrer"
+                class="underline hover:text-text-main"
+              >{{ updateStatus.latestVersion ? `v${updateStatus.latestVersion}` : "release page" }}</a>
+              <template v-else>{{ updateStatus.latestVersion ? `v${updateStatus.latestVersion}` : "unknown" }}</template>
+            </p>
             <p v-if="updateStatus.checkedAt">Last checked: {{ new Date(updateStatus.checkedAt).toLocaleString() }}</p>
           </div>
         </div>

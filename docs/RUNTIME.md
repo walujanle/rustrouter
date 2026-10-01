@@ -173,9 +173,33 @@ background refresh when the cache is older than six hours. The scheduler (`confi
 the last cache and only log, so a rate limit or an offline machine never clears a known-good status.
 
 The response carries `currentVersion`, `latestVersion`, `hasUpdate`, `binaryChanged`,
-`updateAvailable`, `releaseUrl`, `installCmd` and `checkedAt`. `updateAvailable` is the union of the
-two signals and is what the sidebar banner keys off. The action the banner offers is the `npm i -g
-rustrouter@latest` command plus a shutdown.
+`updateAvailable`, `releaseUrl`, `installMethod`, `installCmd` and `checkedAt`. `updateAvailable` is
+the union of the two signals and is what the sidebar banner keys off.
+
+### Install method and the update prompt
+
+`installMethod` (`install_method()` in `update_check.rs`) is `docker`, `npm`, or `binary`, so the
+prompt offers the command that actually updates *this* install instead of always assuming npm.
+Detection is cached in a `LazyLock` and is std-only — no new dependency. First match wins:
+
+1. the `RUSTROUTER_INSTALL_METHOD` marker, set by `npm/bin/rustrouter.js` (npm) and the Dockerfile
+   runtime `ENV` (docker). Our own code sets it, so it is authoritative when present;
+2. a `node_modules` path component in `current_exe()` — positive evidence of a package-manager
+   install, and it covers npm/pnpm/yarn/bun and the Termux download target;
+3. container markers: PID 1 (the image's entrypoint `exec`s `gosu rustrouter`, so the server really
+   is PID 1, and it covers Kubernetes/containerd where no marker file exists), or the image's own
+   `/usr/local/bin/rustrouter` path together with `/.dockerenv` or `/run/.containerenv`. The path
+   guard matters: `/.dockerenv` exists in every container, so a cargo build inside a devcontainer
+   would otherwise be told to `docker pull`;
+4. otherwise a direct binary.
+
+`installCmd` is the matching command — the DOCKER.md pull-and-remove pair, the npm command, or
+`null` for a binary (which has none, so `releaseUrl` falls back to the constant
+`releases/latest` link). The Docker branch also forces `binaryChanged` to `null`: the image's binary
+is compiled inside the image, so it is never the release asset and the hash signal would otherwise
+make `updateAvailable` permanently true. The sidebar offers a copy-and-shutdown flow only off
+Docker — a container cannot pull its own replacement, and `restart: always` would bring the old one
+straight back. `rustrouter update-check` prints the same method and command offline.
 
 ## Launcher behaviour
 

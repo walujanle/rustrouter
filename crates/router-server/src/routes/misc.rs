@@ -46,15 +46,29 @@ pub async fn init() -> Response {
 ///
 /// `hasUpdate` is the version signal; `binaryChanged` is the re-cut signal — the
 /// running executable's hash differs from the published asset's. `updateAvailable`
-/// is the union, and is what the sidebar banner keys off.
+/// is the union, and is what the sidebar banner keys off. `installMethod` says
+/// how the binary was installed, and `installCmd` is the matching update command.
 pub async fn version(State(state): State<AppState>) -> Response {
     crate::services::update_check::refresh_if_stale(state);
     Json(version_payload()).into_response()
 }
 
+/// The fallback link for a direct binary. Unlike a Docker or npm install, that
+/// one has no command, so the release page is the whole prompt and must not
+/// depend on a completed GitHub poll.
+const LATEST_RELEASE_URL: &str = "https://github.com/walujanle/rustrouter/releases/latest";
+
 /// Assemble the body from the cached status. Split out so it can be tested
 /// without an `AppState` and without spawning the network refresh.
 fn version_payload() -> Value {
+    version_payload_for(crate::services::update_check::install_method())
+}
+
+/// The body for a known install method, so a test can pin the channel without
+/// reading the live environment and filesystem.
+fn version_payload_for(method: crate::services::update_check::InstallMethod) -> Value {
+    use crate::services::update_check::InstallMethod;
+
     let status = crate::services::update_check::cached();
     let (latest, has_update, binary_changed, release_url, checked_at) = match status {
         Some(s) => (
@@ -66,7 +80,26 @@ fn version_payload() -> Value {
         ),
         None => (Value::Null, false, Value::Null, Value::Null, Value::Null),
     };
-    let update_available = has_update || binary_changed == Value::Bool(true);
+
+    // The image's binary is compiled inside the image, so it is never the
+    // release asset and the hash can never match — leaving the signal on would
+    // make `updateAvailable` permanently true and nag every container forever.
+    let (binary_changed, update_available) = if method == InstallMethod::Docker {
+        (Value::Null, has_update)
+    } else {
+        (
+            binary_changed.clone(),
+            has_update || binary_changed == Value::Bool(true),
+        )
+    };
+
+    // A direct binary has no command, so the release page is the only action;
+    // fall back to the constant link when no poll has completed.
+    let release_url = match (method, release_url) {
+        (InstallMethod::Binary, Value::Null) => Value::String(LATEST_RELEASE_URL.to_string()),
+        (_, url) => url,
+    };
+
     json!({
         "currentVersion": APP_VERSION,
         "latestVersion": latest,
@@ -74,7 +107,8 @@ fn version_payload() -> Value {
         "binaryChanged": binary_changed,
         "updateAvailable": update_available,
         "releaseUrl": release_url,
-        "installCmd": "npm i -g rustrouter@latest",
+        "installMethod": method.as_str(),
+        "installCmd": method.update_command(),
         "checkedAt": checked_at,
     })
 }
@@ -131,6 +165,7 @@ pub fn header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::update_check::InstallMethod;
     use axum::body::to_bytes;
 
     async fn body_json(response: Response) -> Value {
@@ -167,12 +202,54 @@ mod tests {
     fn version_payload_keeps_its_shape_before_any_check() {
         // No cache populated: the route still answers with every field, and the
         // absence of a check is not reported as an available update.
-        let body = version_payload();
+        //
+        // Pinned to a method rather than the env-reading `version_payload()`:
+        // detection reads the live filesystem, so the bare call would report
+        // Docker on a CI runner or a devcontainer and fail this assertion.
+        let body = version_payload_for(InstallMethod::Npm);
         assert_eq!(body["currentVersion"], json!(APP_VERSION));
         assert_eq!(body["latestVersion"], Value::Null);
         assert_eq!(body["hasUpdate"], json!(false));
         assert_eq!(body["binaryChanged"], Value::Null);
         assert_eq!(body["updateAvailable"], json!(false));
         assert_eq!(body["installCmd"], json!("npm i -g rustrouter@latest"));
+    }
+
+    #[test]
+    fn each_install_method_gets_its_own_prompt() {
+        let npm = version_payload_for(InstallMethod::Npm);
+        assert_eq!(npm["installMethod"], json!("npm"));
+        assert_eq!(npm["installCmd"], json!("npm i -g rustrouter@latest"));
+
+        let docker = version_payload_for(InstallMethod::Docker);
+        assert_eq!(docker["installMethod"], json!("docker"));
+        assert!(
+            docker["installCmd"]
+                .as_str()
+                .is_some_and(|c| c.starts_with("docker pull ghcr.io/walujanle/rustrouter")),
+            "docker prompt must pull the image: {}",
+            docker["installCmd"]
+        );
+        // The image's binary is never the release asset, so the re-cut signal is
+        // meaningless there and must stay off or the banner nags forever.
+        assert_eq!(docker["binaryChanged"], Value::Null);
+
+        let binary = version_payload_for(InstallMethod::Binary);
+        assert_eq!(binary["installMethod"], json!("binary"));
+        assert_eq!(binary["installCmd"], Value::Null);
+        assert_eq!(
+            binary["releaseUrl"],
+            json!("https://github.com/walujanle/rustrouter/releases/latest")
+        );
+    }
+
+    #[test]
+    fn a_docker_install_never_reports_a_binary_change() {
+        // Guards the permanent-nag regression directly: even with a cached
+        // `binary_changed = Some(true)`, a Docker install reports null and does
+        // not turn that into `updateAvailable`.
+        let body = version_payload_for(InstallMethod::Docker);
+        assert_eq!(body["binaryChanged"], Value::Null);
+        assert_eq!(body["updateAvailable"], json!(false));
     }
 }

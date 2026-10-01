@@ -208,6 +208,131 @@ fn is_android() -> bool {
         || std::path::Path::new("/system/bin/linker64").exists()
 }
 
+/// Where the running binary came from, so the update prompt can hand the user
+/// the command that actually updates *this* install instead of always assuming
+/// npm.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InstallMethod {
+    Docker,
+    Npm,
+    Binary,
+}
+
+impl InstallMethod {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            InstallMethod::Docker => "docker",
+            InstallMethod::Npm => "npm",
+            InstallMethod::Binary => "binary",
+        }
+    }
+
+    /// The one shell command that moves this channel to the newest release, or
+    /// `None` for a direct binary — that one is replaced from the release page,
+    /// whose URL the payload carries as `releaseUrl`.
+    ///
+    /// The Docker command is DOCKER.md's Update section: pull, then remove the
+    /// container. Recreating it is left to the user because the run line (or the
+    /// compose file) is theirs, and the image tag cannot be read from inside the
+    /// container — `HOSTNAME` is pinned to `0.0.0.0`, so the usual container-id
+    /// trick is unavailable.
+    pub fn update_command(self) -> Option<&'static str> {
+        match self {
+            InstallMethod::Docker => {
+                Some("docker pull ghcr.io/walujanle/rustrouter:latest && docker rm -f rustrouter")
+            }
+            InstallMethod::Npm => Some("npm i -g rustrouter@latest"),
+            InstallMethod::Binary => None,
+        }
+    }
+
+    /// Whether the update can be applied by stopping this process and replacing
+    /// the binary. False inside a container: it cannot pull its own replacement,
+    /// and a `restart: always` policy would bring the old container straight
+    /// back, so offering a shutdown button there is wrong.
+    pub fn can_shutdown(self) -> bool {
+        !matches!(self, InstallMethod::Docker)
+    }
+}
+
+/// The marker our own npm shim and image set, so the common cases need no
+/// heuristic. See `npm/bin/rustrouter.js` and the Dockerfile runtime stage.
+const METHOD_ENV: &str = "RUSTROUTER_INSTALL_METHOD";
+
+/// Cached: the environment and the filesystem do not change under a running
+/// process, and `/api/version` is public and polled.
+static INSTALL_METHOD: LazyLock<InstallMethod> = LazyLock::new(detect_install_method);
+
+pub fn install_method() -> InstallMethod {
+    *INSTALL_METHOD
+}
+
+/// First match wins:
+///
+/// 1. the `RUSTROUTER_INSTALL_METHOD` marker, set by our own shim and image;
+/// 2. a `node_modules` component in the executable path, which is positive
+///    evidence the binary arrived through a package manager;
+/// 3. container markers — this only says *where* it runs, so it sits below the
+///    install-channel signals;
+/// 4. otherwise a direct binary.
+fn detect_install_method() -> InstallMethod {
+    if let Ok(v) = std::env::var(METHOD_ENV)
+        && let Some(m) = parse_method(&v)
+    {
+        return m;
+    }
+    if path_is_in_node_modules() {
+        return InstallMethod::Npm;
+    }
+    if is_container() {
+        return InstallMethod::Docker;
+    }
+    InstallMethod::Binary
+}
+
+fn parse_method(raw: &str) -> Option<InstallMethod> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "docker" => Some(InstallMethod::Docker),
+        "npm" | "node" | "nodejs" => Some(InstallMethod::Npm),
+        "binary" | "direct" => Some(InstallMethod::Binary),
+        _ => None,
+    }
+}
+
+/// The executable sits under a `node_modules` directory. A path-component match,
+/// not a substring, so `/srv/node_modules_backup/rustrouter` does not count. The
+/// shim spawns the resolved real path, so this sees the package tree, not npm's
+/// own symlink.
+fn path_is_in_node_modules() -> bool {
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
+    exe.components()
+        .any(|c| c.as_os_str().eq_ignore_ascii_case("node_modules"))
+}
+
+/// PID 1 is the strongest signal on Linux: the image's entrypoint `exec`s
+/// `gosu rustrouter`, so the server really is PID 1, and it covers
+/// Kubernetes/containerd where no marker file exists. A host always has init
+/// there, and a devcontainer does not run rustrouter as PID 1, so this does not
+/// misfire on a source build.
+///
+/// The marker files need the image's own binary path as well, because
+/// `/.dockerenv` exists in every Docker container — without the guard, a cargo
+/// build inside a devcontainer would be told to `docker pull`.
+fn is_container() -> bool {
+    if std::process::id() == 1 {
+        return true;
+    }
+    let image_binary = std::env::current_exe()
+        .ok()
+        .is_some_and(|p| p == std::path::Path::new("/usr/local/bin/rustrouter"));
+    image_binary
+        && (std::path::Path::new("/.dockerenv").exists()
+            || std::path::Path::new("/run/.containerenv").exists())
+}
+
 fn running_sha256() -> Option<String> {
     let exe = std::env::current_exe().ok()?;
     let bytes = std::fs::read(exe).ok()?;
@@ -248,5 +373,60 @@ mod tests {
         assert!(is_newer("0.3", "0.2.9"));
         assert_eq!(parse_version("1"), (1, 0, 0));
         assert_eq!(parse_version("junk"), (0, 0, 0));
+    }
+
+    #[test]
+    fn method_marker_parses_case_insensitively() {
+        assert_eq!(parse_method("Docker"), Some(InstallMethod::Docker));
+        assert_eq!(parse_method("  NPM  "), Some(InstallMethod::Npm));
+        assert_eq!(parse_method("node"), Some(InstallMethod::Npm));
+        assert_eq!(parse_method("Binary"), Some(InstallMethod::Binary));
+        assert_eq!(parse_method(""), None);
+        assert_eq!(parse_method("apt"), None);
+    }
+
+    #[test]
+    fn only_docker_refuses_the_shutdown_flow() {
+        // A container cannot pull its own replacement, and `restart: always`
+        // would bring the old one back, so it must not offer a shutdown.
+        assert!(!InstallMethod::Docker.can_shutdown());
+        assert!(InstallMethod::Npm.can_shutdown());
+        assert!(InstallMethod::Binary.can_shutdown());
+    }
+
+    #[test]
+    fn the_binary_method_has_no_command() {
+        assert_eq!(InstallMethod::Binary.update_command(), None);
+        assert_eq!(
+            InstallMethod::Npm.update_command(),
+            Some("npm i -g rustrouter@latest")
+        );
+        assert!(
+            InstallMethod::Docker
+                .update_command()
+                .is_some_and(|c| c.starts_with("docker pull ghcr.io/walujanle/rustrouter"))
+        );
+    }
+
+    #[test]
+    fn node_modules_is_a_component_match_not_a_substring() {
+        // `/srv/node_modules_backup/rustrouter` must not read as an npm install.
+        let real = std::env::current_exe().expect("the test binary has a path");
+        let dir = real.parent().expect("has a parent");
+        let decoy = dir.join("node_modules_backup");
+        assert!(
+            !decoy
+                .components()
+                .any(|c| c.as_os_str().eq_ignore_ascii_case("node_modules")),
+            "a `node_modules_*` sibling must not match"
+        );
+        assert!(
+            decoy
+                .join("node_modules")
+                .join("x")
+                .components()
+                .any(|c| c.as_os_str().eq_ignore_ascii_case("node_modules")),
+            "a real `node_modules` component must match"
+        );
     }
 }
