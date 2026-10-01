@@ -53,7 +53,9 @@ runtime runs 4 to 8 worker threads and 32 blocking threads.
 body increments the counter at construction and decrements it on drop, whether it completes or the
 client disconnects. A thread ticks every 5 seconds and, after 30 seconds with the counter at zero,
 runs a per-OS trim on the C heap: `malloc_trim(0)` on glibc, `mallopt(M_PURGE)` on Android,
-`malloc_zone_pressure_relief` on macOS, a working-set trim on Windows. mimalloc releases the Rust
+`malloc_zone_pressure_relief` on macOS, a working-set trim on Windows. The Android call resolves
+`mallopt` through `dlsym` because it is API 26 and the build targets API 21; on an older platform
+the trim is a no-op. mimalloc releases the Rust
 heap's abandoned pages on its next allocation-side event, and this thread's own tick keeps that
 path warm, so it needs no call here.
 

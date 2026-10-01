@@ -1,6 +1,6 @@
 {
 	"name": "rustrouter-linux-arm64",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "rustrouter binary for linux-arm64 (glibc)",
 	"license": "MIT",
 	"repository": {

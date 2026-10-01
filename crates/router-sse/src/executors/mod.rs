@@ -63,12 +63,14 @@ pub fn get_executor(provider: &str) -> Arc<dyn Executor> {
     if let Some(build) = SPECIAL.get(provider) {
         return build();
     }
-    if let Some(cached) = DEFAULT_CACHE.get(provider) {
-        return cached.clone();
-    }
-    let executor: Arc<dyn Executor> = Arc::new(DefaultExecutor::new(provider));
-    DEFAULT_CACHE.insert(provider.to_string(), executor.clone());
-    executor
+    // `entry` holds the shard lock across the check and the insert, so two
+    // threads racing on a cold key return the same `Arc`. A separate `get` +
+    // `insert` lets both build and insert, and each caller gets its own
+    // instance.
+    DEFAULT_CACHE
+        .entry(provider.to_string())
+        .or_insert_with(|| Arc::new(DefaultExecutor::new(provider)))
+        .clone()
 }
 
 /// Whether the provider has a special executor rather than the default.

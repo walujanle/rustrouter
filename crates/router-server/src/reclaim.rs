@@ -102,10 +102,16 @@ fn trim() {
     #[cfg(target_os = "android")]
     {
         // bionic's `M_PURGE`; the value is fixed by the platform header.
-        const M_PURGE: i32 = -6;
-        // SAFETY: two integers, return value ignored.
-        let _ = unsafe { mallopt(M_PURGE, 0) };
-        tracing::debug!(target: "rustrouter::mem", "reclaim: mallopt(M_PURGE)");
+        const M_PURGE: i32 = -101;
+        // `mallopt` is `__INTRODUCED_IN(26)` and cargo-ndk defaults to API 21,
+        // so a direct call fails to link. Resolve it at runtime instead: the
+        // symbol is absent on older platforms, where this is a no-op, and the
+        // C heap keeps its pages (the pool caps still bound it).
+        if let Some(mallopt) = android_mallopt() {
+            // SAFETY: two integers, return value ignored.
+            let _ = unsafe { mallopt(M_PURGE, 0) };
+            tracing::debug!(target: "rustrouter::mem", "reclaim: mallopt(M_PURGE)");
+        }
     }
 
     #[cfg(target_os = "macos")]
@@ -135,9 +141,32 @@ unsafe extern "C" {
     fn malloc_trim(pad: usize) -> i32;
 }
 
+/// bionic's `mallopt`, resolved at runtime.
+///
+/// `mallopt` is `__INTRODUCED_IN(26)` and cargo-ndk links against API 21, so a
+/// direct call fails with an undefined symbol. `dlsym` is always present, so
+/// this returns `None` where the platform predates the symbol.
+#[cfg(target_os = "android")]
+fn android_mallopt() -> Option<unsafe extern "C" fn(i32, i32) -> i32> {
+    /// LP64 `RTLD_DEFAULT`; `aarch64-linux-android` is LP64, where it is null.
+    const RTLD_DEFAULT: *mut core::ffi::c_void = core::ptr::null_mut();
+
+    // SAFETY: `RTLD_DEFAULT` is a valid handle and the name is a static,
+    // NUL-terminated C string.
+    let sym = unsafe { dlsym(RTLD_DEFAULT, c"mallopt".as_ptr()) };
+    if sym.is_null() {
+        return None;
+    }
+    // SAFETY: non-null, and where present `mallopt` has this signature.
+    Some(unsafe { std::mem::transmute(sym) })
+}
+
 #[cfg(target_os = "android")]
 unsafe extern "C" {
-    fn mallopt(param: i32, value: i32) -> i32;
+    fn dlsym(
+        handle: *mut core::ffi::c_void,
+        symbol: *const core::ffi::c_char,
+    ) -> *mut core::ffi::c_void;
 }
 
 #[cfg(target_os = "macos")]
