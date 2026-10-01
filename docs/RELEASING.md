@@ -157,18 +157,43 @@ publisher configured on npmjs.com for **each** package: GitHub Actions, repo
 `walujanle/rustrouter`, workflow filename `release.yml`.
 
 **A brand-new package has no settings page, so a trusted publisher cannot be
-attached until the package exists.** The first publish of each of the six names
-must be bootstrapped once with a token:
+attached until the package exists, and OIDC cannot create a package.** The first
+publish of each of the six names must be bootstrapped once with a token, from a
+maintainer machine that is logged in (`npm whoami`). Six names, published in this
+order:
+
+1. `rustrouter-linux-x64`, `rustrouter-linux-arm64`, `rustrouter-darwin-arm64`,
+   `rustrouter-win32-x64`, `rustrouter-win32-arm64`
+2. `rustrouter`
+
+Platforms first: the main package lists the five as `optionalDependencies`, so
+they have to resolve when it is installed. The platform `bin/` directories are
+gitignored and empty in a fresh checkout, so pull the binaries from the release
+that already exists:
 
 ```bash
-# from a maintainer machine, after the first Release exists
-cd npm/platforms/linux-x64 && npm publish --access public   # repeat for each platform
-cd npm && npm publish --access public
+base=https://github.com/walujanle/rustrouter/releases/download/v0.1.1
+ver=0.1.1
+place() { mkdir -p "npm/platforms/$1/bin"; curl -fsSL "$base/$2" -o "npm/platforms/$1/bin/$3"; chmod +x "npm/platforms/$1/bin/$3"; }
+place linux-x64     "rustrouter-linux-amd64-$ver"       rustrouter
+place linux-arm64   "rustrouter-linux-arm64-$ver"       rustrouter
+place darwin-arm64  "rustrouter-macos-arm64-$ver"       rustrouter
+place win32-x64     "rustrouter-windows-x64-$ver.exe"   rustrouter.exe
+place win32-arm64   "rustrouter-windows-arm64-$ver.exe" rustrouter.exe
+
+for d in linux-x64 linux-arm64 darwin-arm64 win32-x64 win32-arm64; do
+  (cd "npm/platforms/$d" && npm publish --access public)
+done
+(cd npm && npm publish --access public)
 ```
 
-Then add the trusted publisher on each package's settings page and remove the
-token. Every release after that is token-free. Until a package is configured,
-only its own `npm publish` step fails — the GitHub Release itself still succeeds.
+Then add the trusted publisher on each of the six package settings pages
+(`npmjs.com/package/<name>/access` → Trusted Publisher) and remove the token.
+Every release after that is token-free. Until a package is configured, only its
+own `npm publish` step fails — the GitHub Release itself still succeeds.
+
+This bootstrap is once per name. After it, a `v*` tag publishes through OIDC with
+no stored token, so a new version needs no manual step.
 
 ## Verifying a release
 

@@ -5,11 +5,9 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
-## [0.1.1] - 2026-10-01
-
 ### Added
 
-- The README now carries a Docker quick start. It calls out the required
+- The README carries a Docker quick start. It calls out the required
   `-p 20129:20129`: without it the container starts but nothing on the host can
   reach it, which reads as an empty response in the browser.
 - `DOCKER.md` and the README document the dashboard login, folded into the
@@ -19,6 +17,8 @@ All notable changes to this project are documented here. Format follows
   password must be changed before remote access". `INITIAL_PASSWORD` is the
   bootstrap that works; it is listed in `.env.example` and wired into
   `docker-compose.yml` with a default.
+
+## [0.1.1] - 2026-10-01
 
 ### Fixed
 
