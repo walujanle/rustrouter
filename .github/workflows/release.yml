@@ -242,14 +242,29 @@ jobs:
           place linux-x64   "rustrouter-linux-amd64-${version}"        rustrouter
           place linux-arm64 "rustrouter-linux-arm64-${version}"        rustrouter
           place darwin-arm64 "rustrouter-macos-arm64-${version}"       rustrouter
-          place win32-x64   "rustrouter-windows-x64-${version}.exe"    rustrouter.exe
-          place win32-arm64 "rustrouter-windows-arm64-${version}.exe"  rustrouter.exe
+          place windows-x64   "rustrouter-windows-x64-${version}.exe"    rustrouter.exe
+          place windows-arm64 "rustrouter-windows-arm64-${version}.exe"  rustrouter.exe
       - name: Publish platform packages
         shell: bash
         run: |
           set -euo pipefail
-          for dir in linux-x64 linux-arm64 darwin-arm64 win32-x64 win32-arm64; do
-            npm publish "npm/platforms/$dir" --provenance --access public
+          # A version can already exist if the name was bootstrapped by hand
+          # before its first tag (see docs/RELEASING.md). Publishing over it is
+          # an E403 that aborts the step, so skip names already on the registry.
+          for dir in linux-x64 linux-arm64 darwin-arm64 windows-x64 windows-arm64; do
+            name="$(node -p "require('./npm/platforms/$dir/package.json').name")"
+            if npm view "$name@${{ needs.verify.outputs.version }}" version >/dev/null 2>&1; then
+              echo "$name@${{ needs.verify.outputs.version }} already published, skipping"
+            else
+              npm publish "npm/platforms/$dir" --provenance --access public
+            fi
           done
       - name: Publish the main package
-        run: npm publish npm --provenance --access public
+        shell: bash
+        run: |
+          set -euo pipefail
+          if npm view "rustrouter@${{ needs.verify.outputs.version }}" version >/dev/null 2>&1; then
+            echo "rustrouter@${{ needs.verify.outputs.version }} already published, skipping"
+          else
+            npm publish npm --provenance --access public
+          fi

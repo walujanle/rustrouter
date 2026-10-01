@@ -100,8 +100,8 @@ rustrouter                 bin/rustrouter.js shim + optionalDependencies + posti
 rustrouter-linux-x64       the binary for linux/x64 (glibc)
 rustrouter-linux-arm64     the binary for linux/arm64 (glibc)
 rustrouter-darwin-arm64    the binary for darwin/arm64
-rustrouter-win32-x64       the binary for win32/x64
-rustrouter-win32-arm64     the binary for win32/arm64
+rustrouter-windows-x64     the binary for Windows x64
+rustrouter-windows-arm64   the binary for Windows arm64
 ```
 
 `npm install -g rustrouter` installs the main package, whose `optionalDependencies`
@@ -163,7 +163,7 @@ maintainer machine that is logged in (`npm whoami`). Six names, published in thi
 order:
 
 1. `rustrouter-linux-x64`, `rustrouter-linux-arm64`, `rustrouter-darwin-arm64`,
-   `rustrouter-win32-x64`, `rustrouter-win32-arm64`
+   `rustrouter-windows-x64`, `rustrouter-windows-arm64`
 2. `rustrouter`
 
 Platforms first: the main package lists the five as `optionalDependencies`, so
@@ -178,10 +178,10 @@ place() { mkdir -p "npm/platforms/$1/bin"; curl -fsSL "$base/$2" -o "npm/platfor
 place linux-x64     "rustrouter-linux-amd64-$ver"       rustrouter
 place linux-arm64   "rustrouter-linux-arm64-$ver"       rustrouter
 place darwin-arm64  "rustrouter-macos-arm64-$ver"       rustrouter
-place win32-x64     "rustrouter-windows-x64-$ver.exe"   rustrouter.exe
-place win32-arm64   "rustrouter-windows-arm64-$ver.exe" rustrouter.exe
+place windows-x64   "rustrouter-windows-x64-$ver.exe"   rustrouter.exe
+place windows-arm64 "rustrouter-windows-arm64-$ver.exe" rustrouter.exe
 
-for d in linux-x64 linux-arm64 darwin-arm64 win32-x64 win32-arm64; do
+for d in linux-x64 linux-arm64 darwin-arm64 windows-x64 windows-arm64; do
   (cd "npm/platforms/$d" && npm publish --access public)
 done
 (cd npm && npm publish --access public)

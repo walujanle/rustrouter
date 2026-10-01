@@ -5,6 +5,23 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-01
+
+### Fixed
+
+- The Windows npm platform packages are named `rustrouter-windows-x64` and
+  `rustrouter-windows-arm64`. npm's registry name filter rejects any new package
+  whose name contains `win32` with `E403 Package name triggered spam detection`,
+  so `rustrouter-win32-x64` and `rustrouter-win32-arm64` could never be created
+  and `npm install -g rustrouter` on Windows installed the shim with no binary.
+  The `os` field still reads `win32` — that is what `process.platform` reports
+  and what npm matches against. A published version is immutable, so the fix
+  could not be applied to 0.1.1.
+- The npm publish steps in `release.yml` skip a package version that is already
+  on the registry instead of failing. The bootstrap publish of a brand-new name
+  puts that version on the registry before the first tag for it, so the tag run
+  would otherwise hit `E403` on the existing version and abort the step.
+
 ### Added
 
 - The README carries a Docker quick start. It calls out the required
@@ -42,6 +59,7 @@ All notable changes to this project are documented here. Format follows
 
 Initial release.
 
-[Unreleased]: https://github.com/walujanle/rustrouter/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/walujanle/rustrouter/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/walujanle/rustrouter/releases/tag/v0.1.2
 [0.1.1]: https://github.com/walujanle/rustrouter/releases/tag/v0.1.1
 [0.1.0]: https://github.com/walujanle/rustrouter/releases/tag/v0.1.0

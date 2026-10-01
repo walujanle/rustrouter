@@ -134,7 +134,7 @@ const files = [
   npmLockFile("web/package-lock.json"),
   cargoLockFile(),
   npmMainFile("npm/package.json"),
-  ...["linux-x64", "linux-arm64", "darwin-arm64", "win32-x64", "win32-arm64"].map(
+  ...["linux-x64", "linux-arm64", "darwin-arm64", "windows-x64", "windows-arm64"].map(
     (p) => jsonFile(`npm/platforms/${p}/package.json`),
   ),
 ];

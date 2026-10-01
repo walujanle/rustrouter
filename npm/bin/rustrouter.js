@@ -9,7 +9,10 @@ const path = require("node:path");
 const PLATFORM_PACKAGES = {
 	linux: { x64: "rustrouter-linux-x64", arm64: "rustrouter-linux-arm64" },
 	darwin: { arm64: "rustrouter-darwin-arm64" },
-	win32: { x64: "rustrouter-win32-x64", arm64: "rustrouter-win32-arm64" },
+	// Package names say `windows`, not `win32`: npm's name filter rejects any
+	// name containing `win32`. The key stays `win32` because that is what
+	// process.platform reports.
+	win32: { x64: "rustrouter-windows-x64", arm64: "rustrouter-windows-arm64" },
 };
 
 const pkg = PLATFORM_PACKAGES[process.platform]?.[process.arch];
