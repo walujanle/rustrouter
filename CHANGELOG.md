@@ -5,6 +5,14 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- The Android aarch64 release leg runs as its own job on `ubuntu-24.04` instead
+  of a matrix entry on `ubuntu-24.04-arm`. The ARM runner image ships no Android
+  SDK, and Google publishes the NDK only for an x86_64 Linux host, so
+  `cargo ndk` failed with "Could not find any NDK". The x64 image presets
+  `ANDROID_NDK_HOME`. The native legs no longer carry the android-only steps.
+
 ## [0.1.0] - 2026-10-01
 
 Initial release.

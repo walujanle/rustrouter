@@ -80,11 +80,6 @@ jobs:
             os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             asset: rustrouter-linux-arm64
-          - name: linux-android-aarch64
-            os: ubuntu-24.04-arm
-            target: aarch64-linux-android
-            asset: rustrouter-linux-android-aarch64
-            android: true
           - name: macos-arm64
             os: macos-latest
             target: aarch64-apple-darwin
@@ -117,25 +112,15 @@ jobs:
       # aws-lc-sys (the rustls backend) compiles C and assembly with cmake, so
       # the Linux legs need a C toolchain and cmake before cargo runs.
       - name: Install Linux build tools
-        if: runner.os == 'Linux' && !matrix.android
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y cmake clang
       - name: Install macOS build tools
         if: runner.os == 'macOS'
         run: brew install cmake || true
 
       - name: Build (native)
-        if: ${{ !matrix.android }}
         shell: bash
         run: cargo build --release --locked --target ${{ matrix.target }} -p rustrouter
-
-      # The Android target needs the NDK's clang as linker for every C crate;
-      # cargo-ndk sets that up. The NDK ships on the runner image.
-      - name: Install cargo-ndk
-        if: ${{ matrix.android }}
-        run: cargo install cargo-ndk --locked
-      - name: Build (android)
-        if: ${{ matrix.android }}
-        run: cargo ndk -t arm64-v8a build --release --locked -p rustrouter
 
       - name: Package asset
         shell: bash
@@ -155,8 +140,46 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  # Android is its own job, not a matrix leg. The NDK is only published for an
+  # x86_64 Linux host (no `linux-aarch64` archive exists), and the ARM runner
+  # image ships no Android SDK at all, so the leg has to run on ubuntu-24.04
+  # where the image sets ANDROID_NDK_HOME. Kept separate so the native legs
+  # carry no android-only steps.
+  build-android:
+    needs: [verify, frontend]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android-aarch64
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+      - name: Build (android)
+        run: cargo ndk -t arm64-v8a build --release --locked -p rustrouter
+      - name: Package asset
+        run: |
+          version="${{ needs.verify.outputs.version }}"
+          asset="rustrouter-linux-android-aarch64-${version}"
+          mkdir -p dist
+          cp target/aarch64-linux-android/release/rustrouter "dist/$asset"
+          sha256sum "dist/$asset" | cut -d' ' -f1 > "dist/$asset.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binary-linux-android-aarch64
+          path: dist/*
+          if-no-files-found: error
+
   release:
-    needs: [verify, build]
+    needs: [verify, build, build-android]
     if: needs.verify.outputs.is_tag == 'true'
     runs-on: ubuntu-24.04
     permissions:

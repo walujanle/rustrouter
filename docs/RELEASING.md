@@ -69,7 +69,7 @@ audit` and `npm audit --audit-level=high`.
 |---|---|---|
 | `rustrouter-linux-amd64-x.y.z` | `ubuntu-24.04` | `x86_64-unknown-linux-gnu` |
 | `rustrouter-linux-arm64-x.y.z` | `ubuntu-24.04-arm` | `aarch64-unknown-linux-gnu` |
-| `rustrouter-linux-android-aarch64-x.y.z` | `ubuntu-24.04-arm` | `aarch64-linux-android` |
+| `rustrouter-linux-android-aarch64-x.y.z` | `ubuntu-24.04` (own job) | `aarch64-linux-android` |
 | `rustrouter-macos-arm64-x.y.z` | `macos-latest` | `aarch64-apple-darwin` |
 | `rustrouter-windows-x64-x.y.z.exe` | `windows-latest` | `x86_64-pc-windows-msvc` |
 | `rustrouter-windows-arm64-x.y.z.exe` | `windows-11-arm` | `aarch64-pc-windows-msvc` |
@@ -79,6 +79,12 @@ compiles C and assembly through cmake; a musl cross-build would need a cross C
 toolchain for `aws-lc-sys`, `libsqlite3-sys` and `zstd-sys` at once. Native
 runners avoid that entirely. Revisit musl (via `cargo-zigbuild`) only if someone
 needs a static binary.
+
+Android is a separate job on `ubuntu-24.04` (x64), not a matrix leg. `cargo ndk`
+needs the NDK, and Google publishes it only for an x86_64 Linux host — there is
+no `linux-aarch64` NDK archive — while the `ubuntu-24.04-arm` image ships no
+Android SDK at all. The x64 image presets `ANDROID_NDK_HOME` to NDK 27.3, so the
+cross-compile to `arm64-v8a` runs there.
 
 Each leg downloads the frontend `web/dist` artifact — `router-server` embeds it
 with `rust-embed`, so the frontend is built once and shared. Every asset is
