@@ -5,6 +5,8 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-10-02
+
 ### Fixed
 
 - `POST /api/cli-tools/hermes` writes the role into the YAML as a key and into a
