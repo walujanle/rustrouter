@@ -12,8 +12,9 @@
 //!   `toolCallId` omits `id`; a `null` id keeps the key.
 //! - **The `error` event aborts the stream.** It deliberately refuses to emit
 //!   the error as fake `finish_reason: "stop"` content so the stream is marked
-//!   errored. `ResponseFn` cannot return an error, so it panics: the task is
-//!   torn down rather than the stream ending as if it had completed.
+//!   errored. `ResponseFn` cannot return an error, so it emits an OpenAI error
+//!   frame instead: the client sees `{"error":{…}}` and the stream stops, with
+//!   no panic to unwind a worker thread.
 //! - **`responseId`/`created`/`chunkIndex`/`toolIndex`/`toolIndexById` are
 //!   invented here**, so they live in `state.extra` rather than on the state
 //!   struct. `openTools` and `openText` are written but never read; they are
@@ -30,7 +31,7 @@ use crate::translator::concerns::primitives::{
 use crate::translator::concerns::tool_call::fallback_tool_call_id;
 use crate::translator::concerns::usage::to_openai_usage;
 use crate::translator::formats;
-use crate::translator::schema::{openai_block, role};
+use crate::translator::schema::{openai_block, openai_finish, role};
 
 /// `ensureState(state, model)`: the first call seeds the id/created triple and
 /// the tool bookkeeping. Later calls are a no-op.
@@ -353,6 +354,11 @@ pub fn commandcode_to_openai_response(chunk: &Value, state: &mut ResponseState) 
         }
 
         "finish" => {
+            // An `error` event already emitted the terminal frame; a trailing
+            // `finish` must not follow it with a second one.
+            if state.finish_reason_sent {
+                return Vec::new();
+            }
             let finish_reason = state
                 .finish_reason
                 .clone()
@@ -365,6 +371,7 @@ pub fn commandcode_to_openai_response(chunk: &Value, state: &mut ResponseState) 
                         .unwrap_or_else(|| json!("stop"));
                     map_finish_reason(Some(&raw))
                 });
+            state.finish_reason_sent = true;
             let mut final_chunk = make_chunk(state, json!({}), Some(finish_reason.as_str()));
 
             let total_usage = event
@@ -392,10 +399,19 @@ pub fn commandcode_to_openai_response(chunk: &Value, state: &mut ResponseState) 
                 Value::String(s) => s.clone(),
                 other => serde_json::to_string(other).unwrap_or_else(|_| "undefined".to_string()),
             };
-            // Throwing marks the stream errored/aborted rather than finishing
-            // on fake content. `ResponseFn` cannot return an error, so a panic
-            // is the closest thing to that abort.
-            panic!("[CommandCode error: {err_str}]");
+            // `error` and a later `finish` can both arrive; surface one only.
+            if !state.finish_reason_sent {
+                state.extra.insert("error".into(), err_val);
+                state.finish_reason_sent = true;
+                // An error frame, not fake `finish_reason: "stop"` content: the
+                // stream is marked errored so the client can tell. Same shape
+                // the openai-responses translator emits for its `error` event.
+                out.push(make_chunk(
+                    state,
+                    json!({"content": format!("[Error] {err_str}")}),
+                    Some(openai_finish::STOP),
+                ));
+            }
         }
 
         // `start`, `start-step`, `reasoning-start`, `text-start`, `text-end`,
@@ -605,16 +621,21 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "[CommandCode error: boom]")]
-    fn an_error_event_panics_instead_of_emitting_content() {
+    fn an_error_event_emits_an_error_frame_and_stops() {
         let mut s = state();
-        run(&mut s, json!({"type": "error", "error": "boom"}));
+        let out = run(&mut s, json!({"type": "error", "error": "boom"}));
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["choices"][0]["delta"]["content"], "[Error] boom");
+        assert_eq!(out[0]["choices"][0]["finish_reason"], "stop");
+        assert_eq!(s.extra.get("error"), Some(&json!("boom")));
+        // A `finish` after the error must not emit a second chunk.
+        assert!(run(&mut s, json!({"type": "finish"})).is_empty());
     }
 
     #[test]
-    #[should_panic(expected = "[CommandCode error: unknown]")]
     fn an_error_without_a_payload_names_unknown() {
         let mut s = state();
-        run(&mut s, json!({"type": "error"}));
+        let out = run(&mut s, json!({"type": "error"}));
+        assert_eq!(out[0]["choices"][0]["delta"]["content"], "[Error] unknown");
     }
 }
