@@ -25,7 +25,7 @@ interface Connection {
 const props = defineProps<{
 	isOpen: boolean;
 	connection?: Connection | null;
-	proxyPools?: Array<{ id: string; name: string }>;
+	proxyPools?: Array<Record<string, any>>;
 }>();
 
 const emit = defineEmits<{ save: [updates: Record<string, any>]; close: [] }>();
@@ -63,6 +63,9 @@ watch(
 		testResult.value = null;
 		validationResult.value = null;
 	},
+	// The modal can be opened with a connection already set, so the first run
+	// must populate the form rather than wait for a change.
+	{ immediate: true },
 );
 
 const isOAuth = computed(() => props.connection?.authType === "oauth");
@@ -74,6 +77,12 @@ const isCompatible = computed(() =>
 );
 const providerRegions = computed(() =>
 	props.connection ? AI_PROVIDERS?.[props.connection.provider ?? ""]?.regions || null : null,
+);
+const regionOptions = computed(() =>
+	(providerRegions.value || []).map((r: Record<string, any>) => ({
+		value: r.id,
+		label: r.label,
+	})),
 );
 
 // Build providerSpecificData for region-aware providers
@@ -222,7 +231,7 @@ async function handleSubmit() {
         v-if="providerRegions"
         v-model="region"
         label="Region"
-        :options="providerRegions.map((r: any) => ({ value: r.id, label: r.label }))"
+        :options="regionOptions"
       />
 
       <div v-if="!isCompatible" class="flex items-center gap-3">

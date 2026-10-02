@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
+import EditConnectionModal from "@/components/EditConnectionModal.vue";
 import ConfirmModal from "@/components/ui/ConfirmModal.vue";
 import Button from "@/components/ui/UiButton.vue";
 import Card from "@/components/ui/UiCard.vue";
 import Toggle from "@/components/ui/UiToggle.vue";
 import AddApiKeyModal from "./AddApiKeyModal.vue";
 import ConnectionRow from "./ConnectionRow.vue";
-import EditConnectionModal from "./EditConnectionModal.vue";
 
 // Self-contained card: fetches, displays and manages all connections for a provider.
 const props = withDefaults(
