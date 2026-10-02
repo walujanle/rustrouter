@@ -2,7 +2,7 @@
 
 `web/` is a Vue 3 + Vite single-page app: vue-router in history mode, Pinia for state, Tailwind v4 for styling, Biome for lint and format, and a fetch wrapper in `src/utils/api.ts`. It is client-rendered end to end — every page is a component that fetches from the Rust API on mount. The release build embeds `web/dist` into the binary (see Serving).
 
-For orientation: 108 `.vue` files, 75 under `src/views` and 32 under `src/components`, 5 Pinia stores, and a 753-line `src/style.css`.
+For orientation: 105 `.vue` files, 72 under `src/views` and 32 under `src/components`, 5 Pinia stores, and a 753-line `src/style.css`.
 
 ## Libraries
 
@@ -102,8 +102,8 @@ The media-providers tree serves the four kinds in `MEDIA_PROVIDER_KINDS`: `embed
 
 Six views carry most of the frontend complexity; budget accordingly before touching them.
 
-- `views/ProviderDetailPage.vue`: 1,831 lines, 9 modals, model-caps resolution.
-- `views/usage/components/ProviderLimits/ProviderLimitsPanel.vue` + `utils.ts`: 1,377 + 694 lines.
+- `views/ProviderDetailPage.vue`: 1,683 lines, 9 modals, model-caps resolution.
+- `views/usage/components/ProviderLimits/ProviderLimitsPanel.vue` + `utils.ts`: 1,377 + 590 lines.
 - `views/ProxyPoolsPage.vue`: 1,186 lines.
 - `views/BasicChatPage.vue`: 1,154 lines.
 - `components/UsageStats.vue`: 551 lines, one SSE stream (`/api/usage/stream`), plus the `TimeAgo` component that confines its 1-second re-render to the timestamp span so per-event updates do not jank the page.

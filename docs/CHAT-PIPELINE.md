@@ -57,8 +57,7 @@ returns `Vec<Value>`; translators carry no state, so trait objects would be the 
 
 `translate_request` runs: `strip_content_types`, `normalize_thinking_config`, `ensure_tool_call_ids`,
 `fix_missing_tool_responses`, `capture_thinking`, `resolve_session_id`, `apply_thinking`,
-`filter_to_openai_format`, `prepare_claude_request`, and `cloak_claude_tools` when
-`quirks.cloakToolsOnOAuth` is set and the token starts with `sk-ant-oat`.
+`filter_to_openai_format`, and `prepare_claude_request`.
 
 `apply_thinking` carries per-provider quirks that must not be flattened (`thinking.rs`). The `zai`
 arm disables reasoning with `enable_thinking: false`, because Z.ai ignores `thinking.disabled`, and
@@ -95,9 +94,9 @@ carrying a beta the selector does not know must keep it on the request, so a `cl
 
 Claude OAuth aligns `x-claude-code-session-id` with the session the client already announced. When
 the header is absent and the bearer token is an `sk-ant-oat` token, `DefaultExecutor` derives it from
-`metadata.user_id.session_id` (`utils/claude_cloaking.rs::extract_claude_session_id_from_user_id`),
-accepting either a JSON `{session_id}` object or a plain string with a leading `claude:` stripped.
-The `sk-ant-oat` gate keeps this to OAuth connections.
+`metadata.user_id.session_id` (`session_manager.rs::extract_claude_code_session`), accepting either a
+JSON `{session_id}` object or a plain string with a leading `claude:` stripped. The `sk-ant-oat` gate
+keeps this to OAuth connections.
 
 Binary upstreams decode **inside their own executor** and emit OpenAI-shaped SSE. They never go
 through the translator:
@@ -147,8 +146,8 @@ converting it to a sanitised JSON error.
 
 ## Non-streaming and forced-SSE-to-JSON
 
-`handlers/chat_core/non_streaming.rs` holds hand-written whole-body response converters for Gemini /
-Claude / Responses → OpenAI, used when no registry entry exists — the registry's response translators
+`handlers/chat_core/non_streaming.rs` holds hand-written whole-body response converters for Claude /
+Responses → OpenAI, used when no registry entry exists — the registry's response translators
 are streaming-shaped, and a non-streaming body needs one whole-body conversion instead.
 
 `handlers/chat_core/sse_to_json.rs` handles the case where the provider forces streaming but the
@@ -281,11 +280,9 @@ hook.
 
 ## CLI fingerprint headers
 
-Providers that gate on client identity need a plausible CLI fingerprint. `providers/shared.rs` holds
-the Claude CLI spoof set (`claude_cli_spoof_headers`, `CLAUDE_CLI_VERSION`), while
-`providers/registry.json` carries each transport's header block — Codex's `originator` and
-User-Agent, grok-cli's `grok-shell`, commandcode's CLI headers.
-
-`claude_cli_spoof_headers` computes `X-Stainless-Arch` and `X-Stainless-Os` from the host, while the
-`claude` transport block carries literal `arm64` / `MacOS` values. Preserve each literal value; do
-not reconcile them.
+Providers that gate on client identity need a plausible CLI fingerprint. Each provider's header
+block lives in `providers/registry.json` — Codex's `originator` and User-Agent, grok-cli's
+`grok-shell`, commandcode's CLI headers, and the `Anthropic-Version` / `Anthropic-Beta` pair on the
+`claude` transports. `providers/shared.rs` holds the shared constants (`ANTHROPIC_API_VERSION`, the
+beta list and `select_anthropic_beta`); the per-transport header values are the registry's, and are
+written verbatim.

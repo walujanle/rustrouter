@@ -204,7 +204,7 @@ CREATE INDEX IF NOT EXISTS idx_rd_conn ON requestDetails(connectionId)
 
 `repos/quota_tracker.rs` layers a rustrouter behaviour on the shared rows, gated by `settings.quotaAutoTrackerEnabled` (default off) and run from the auto-ping loop in `services/schedulers.rs` on the same usage read. A connection with any exhausted quota window is set `isActive: false` and marked with `quotaAutoDisabled` and `quotaAutoDisabledAt` in its `data` blob; once a reading is available again the tracker clears both keys and re-activates the row. A window is exhausted when `remaining <= 0`, or when `remaining` is absent and `used >= total` with a positive `total`; `unlimited: true` never exhausts, and a numeric string reads as a number. Two rules keep it from fighting the user: only a connection carrying the marker is re-enabled (a user-disabled row has none and is left alone), and a connection with no quota reading is never disabled. Both marker keys live in the free-form connection blob, so 9router preserves them across a round trip.
 
-**`_meta` keys.** Five: `schemaVersion`, `backupSchemaVersion`, `totalRequestsLifetime`, `appVersion`, `migratedAt`. rustrouter writes the first three. Migration is `run_versioned_migrations` (bootstrap `_meta`, read `schemaVersion`, apply pending in a transaction, stamp) plus `sync_schema_from_tables` (additive: `CREATE TABLE IF NOT EXISTS`, `PRAGMA table_info` diff, `ALTER TABLE ADD COLUMN` with PRIMARY KEY/UNIQUE **stripped**, idempotent index creation).
+**`_meta` keys.** 9router writes five: `schemaVersion`, `backupSchemaVersion`, `totalRequestsLifetime`, `appVersion`, `migratedAt`. rustrouter writes three — `schemaVersion`, `backupSchemaVersion`, `totalRequestsLifetime`; it never writes `appVersion` or `migratedAt`, and reads none of the five except for migration bookkeeping. Migration is `run_versioned_migrations` (bootstrap `_meta`, read `schemaVersion`, apply pending in a transaction, stamp) plus `sync_schema_from_tables` (additive: `CREATE TABLE IF NOT EXISTS`, `PRAGMA table_info` diff, `ALTER TABLE ADD COLUMN` with PRIMARY KEY/UNIQUE **stripped**, idempotent index creation).
 
 **There is no JSON import step.** The data lives in `DATA_DIR/db/data.sqlite`. `Paths` declares the legacy JSON paths and the `db/.migrated-from-json` marker for layout compatibility, and nothing reads or writes them.
 
@@ -222,7 +222,7 @@ An empty or whitespace-only `oidcClientSecret` in a settings patch is removed be
 
 Files rustrouter also writes under `DATA_DIR`: `jwt-secret` (generated if absent), `auth/cli-secret`, `machine-id`, `model-catalog.json` (and `model-catalog-raw.json`).
 
-**`jwt-secret` resolution.** `JWT_SECRET` wins when it is set and non-empty; otherwise the file is read and trimmed, and the result is used even when it is empty. The file is not regenerated over a blank one, so an empty or whitespace-only `jwt-secret` yields an empty HMAC key and a forgeable session. Only an absent file is created, as 32 random bytes in hex with mode 0600.
+**`jwt-secret` resolution.** `JWT_SECRET` wins when it is set and non-empty; otherwise the file is read and trimmed. An absent, empty, or whitespace-only file is treated as absent and regenerated: 32 random bytes in hex, mode 0600. A truncated file therefore cannot leave every session signed with an empty key. (`identity::jwt_secret`.)
 
 ## Transactions
 

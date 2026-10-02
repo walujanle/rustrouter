@@ -50,7 +50,7 @@ docker run -d --name rustrouter \
 afterward). `-p 20129:20129` is required — without it the container starts but
 the host has no route to it and the browser gets an empty response. The image is
 multi-platform (`linux/amd64`, `linux/arm64`). Pin a version instead of `latest`
-with `ghcr.io/walujanle/rustrouter:0.1.1`.
+with `ghcr.io/walujanle/rustrouter:0.1.2`.
 
 From the repo, `docker compose up -d` does the same thing in one command; set
 `INITIAL_PASSWORD` in the environment to override the default. `DOCKER.md` covers
@@ -70,22 +70,23 @@ client at `http://localhost:20129/v1`.
 
 ## What it does
 
-- **One endpoint, many providers.** Requests in OpenAI, Anthropic, Gemini, or
-  Responses format are translated to whatever the selected provider speaks and
-  back again.
-- **Fallback.** A failed model falls through a combo to the next model, and a
-  failed account falls through to the next connection for that provider.
-- **Credentials.** OAuth flows for the providers that need them, API keys for
-  the rest, proactive and reactive token refresh, and per-model cooldown after
-  an upstream error.
-- **Usage.** Token and cost accounting per provider, model, and account, written
-  to the shared SQLite tables.
-- **Optional quota tracker.** Disables a connection when its quota is exhausted
-  and re-enables it when usage is available again. Off by default.
+One endpoint, many providers. A request in OpenAI, Anthropic, Gemini, or
+Responses format is translated to whatever the selected provider speaks, and the
+reply is translated back.
 
-Everything is local. There is no cloud sync and no telemetry. A container image
-is published to GHCR for those who want one (`DOCKER.md`), but the binary has no
-runtime dependency on Docker or Node.
+When a model fails, the combo moves to the next model; when an account fails,
+the request moves to the next connection for that provider. Providers that need
+OAuth get an OAuth flow, the rest take API keys, and tokens refresh proactively
+and on a 401/403. A model that keeps erroring is cooled down.
+
+Usage is accounted per provider, model, and account — tokens and cost — into the
+shared SQLite tables. An optional quota tracker (off by default) disables a
+connection whose quota is exhausted and re-enables it once usage is available
+again.
+
+Everything is local: no cloud sync, no telemetry. A container image is published
+to GHCR for those who want one (`DOCKER.md`), but the binary has no runtime
+dependency on Docker or Node.
 
 ## Layout
 

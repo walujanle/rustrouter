@@ -43,7 +43,9 @@ cd web && ./node_modules/.bin/biome ci
 cd web && npm audit
 ```
 
-The release build embeds `web/dist` into the binary. There is no Docker and no Node at runtime.
+The release build embeds `web/dist` into the binary. There is no Node at runtime. Docker is a
+packaging option, not a runtime dependency: `Dockerfile` and `docker-compose.yml` build the same
+binary, and `DOCKER.md` covers the image.
 
 For a manual production build outside CI, use `./build.bat` (Windows) or
 `./build.sh` (Linux/macOS); both build the frontend first, then the backend, and

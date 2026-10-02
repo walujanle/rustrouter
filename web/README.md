@@ -29,10 +29,10 @@ local binary instead.
 - Route definitions live in `src/router/index.ts`; the API client is
   `src/utils/api.ts`.
 - `src/style.css` holds the design tokens and the Tailwind v4 theme block. The
-  `@import "tailwindcss" source(...)` scan base must point at `src`, or the
+  `@import "tailwindcss" source(...)` scan base is `source("../")` — the `web/`
+  root — so both `src/` and `index.html` are scanned. Get it wrong and the
   utility sheet comes out empty and the app builds unstyled.
 - Icons are Material Symbols ligatures. They stay hidden until the font loads;
   the inline script in `index.html` flips the `.fonts-loaded` class and has a 3s
   timeout, which is the only error surface.
-- Design decisions and the React → Vue conversion notes are in
-  `../docs/FRONTEND.md`.
+- Design decisions are in `../docs/FRONTEND.md`.

@@ -4,14 +4,18 @@ rustrouter's tests are Rust unit tests, colocated with the code in `#[cfg(test)]
 
 ## Test inventory
 
-Roughly 1,200 test functions live in 179 `#[cfg(test)]` modules:
+About 1,140 test functions live in 166 files carrying a `#[cfg(test)]` module:
 
 | Crate | `#[test]` | `#[tokio::test]` |
 |---|---|---|
 | `router-db` | 159 | 0 |
-| `router-sse` | 932 | 51 |
-| `router-server` | 108 | 11 |
-| `rustrouter` (bin) | 18 | 0 |
+| `router-sse` | 782 | 51 |
+| `router-server` | 120 | 11 |
+| `rustrouter` (bin) | 19 | 0 |
+
+Counts are `grep -ro '#\[test\]'` / `#\[tokio::test\]` over `crates/`; `cargo test
+--workspace` prints the same totals per crate. They drift as tests are added, so
+treat the phrase as the anchor and the table as the shape, not a contract.
 
 The async tests cover the axum handlers. A route test assembles the real `Router` and drives it with `tower::ServiceExt::oneshot`, so the route table is exercised, not just the handler function. `router-db` tests open an in-memory connection and apply the real `PRAGMA_SQL`.
 
@@ -66,7 +70,7 @@ Tests run in parallel in one process, so two kinds of shared state need care.
 
 A test that opens the database gets its own data directory — `router-server` builds one under the OS temp dir keyed by process id and label — because SQLite refuses two writers on one file.
 
-A test that mutates a process-global store serializes with the other tests that touch it. Three such stores are cleared between cases: the grok-cli turn store (`turn_store_guard` in `executors/grok_cli.rs`), the combo rotation cursor (`rotation_guard` in `services/combo.rs`), and the thought-signature store (`test_guard` in `utils/thought_signature_store.rs`, shared with the translator tests that clear it). Each guard is a process-wide `Mutex` whose lock recovers from poisoning, so one failing test does not cascade into false failures in the rest.
+A test that mutates a process-global store serializes with the other tests that touch it. Two such stores are cleared between cases: the grok-cli turn store (`turn_store_guard` in `executors/grok_cli.rs`) and the combo rotation cursor (`rotation_guard` in `services/combo.rs`). Each guard is a process-wide `Mutex` whose lock recovers from poisoning, so one failing test does not cascade into false failures in the rest.
 
 ## The gate
 

@@ -35,7 +35,7 @@
 
 rustrouter listens on **20129**; `DEFAULT_MITM_ROUTER_BASE` in `router-db` stays `http://localhost:20128`. That value is a key inside the shared settings blob, so it is part of the parity contract rather than a live bind address: rewriting it to 20129 changes the bytes an existing 9router row reads.
 
-The size of the job, in this repo's own terms: four crates (~85,600 lines of Rust), a Vue 3 dashboard of 108 `.vue` files, a generated provider registry of 24 entries (18 with a transport) and 202 model rows, 11 database tables, and 1,158 unit tests.
+The size of the job, in this repo's own terms: four crates (~82,900 lines of Rust), a Vue 3 dashboard of 105 `.vue` files, a generated provider registry of 24 entries (18 with a transport) and 202 model rows, 11 database tables, and about 1,140 unit tests.
 
 ---
 
@@ -80,7 +80,7 @@ Four crates. `router-sse` stays HTTP-free so it can be unit-tested on its own, a
 
 ### 2.2 Dependency set
 
-`axum 0.8`, `tokio`, `tower-http`, `reqwest` (rustls, `stream`, `socks`, `multipart`, `json`, `cookies`), `rusqlite` (bundled), `serde` + `serde_json` **with `preserve_order`**, `bcrypt`, `dashmap`, `futures`, `tokio-util`, `async-stream`, `crc32fast`, `flate2`, `base64`, `sha2`, `uuid`, `regex`, `thiserror`, `tracing`, `rust-embed`, `toml_edit`, `dirs`, `which`, `chrono`. The dashboard signing is a hand-rolled HS256 (`crates/router-server/src/auth/jwt.rs`), so there is no JWT crate.
+`axum 0.8`, `tokio`, `tower-http`, `reqwest` (rustls, `stream`, `socks`, `multipart`, `json`, `cookies`), `rusqlite` (bundled), `serde` + `serde_json` **with `preserve_order`**, `bcrypt`, `dashmap`, `futures`, `tokio-util`, `async-stream`, `base64`, `sha2`, `uuid`, `regex`, `thiserror`, `tracing`, `rust-embed`, `toml_edit`, `dirs`, `which`, `chrono`. The dashboard signing is a hand-rolled HS256 (`crates/router-server/src/auth/jwt.rs`), so there is no JWT crate.
 
 Resolved versions live in `Cargo.lock`. The workspace pins `edition = "2024"` and `rust-version = "1.88"`, the highest MSRV in the current tree. Frontend versions are in `web/package.json`; TypeScript is deliberately held at 6.x because `vue-tsc` 3.3 imports TypeScript's `./lib/tsc` export, which TypeScript 7 drops.
 
@@ -150,7 +150,7 @@ Full detail in `docs/DB-PARITY.md`. The short version:
 Detail in `docs/FRONTEND.md`. Summary:
 
 - The dashboard is Vue 3 + Vite + Tailwind, with `vue-router`, `pinia`, `vue-chartjs`, `@vue-flow/core`, `@guolao/vue-monaco-editor` and `vue-draggable-plus`.
-- `web/src/style.css` carries the global stylesheet. The Tailwind `source("../../")` scan root matters: get it wrong and the utility sheet comes out empty and the app builds unstyled.
+- `web/src/style.css` carries the global stylesheet. The Tailwind `source("../")` scan root matters: get it wrong and the utility sheet comes out empty and the app builds unstyled.
 - `index.html` runs a pre-paint theme script (keeping the `localStorage` key and the `{state:{theme}}` envelope so the Pinia persist plugin stays compatible), a fonts-loaded script, and the Material Symbols stylesheet.
 - `vite.config.ts` aliases `@` to `src`; imports use `@/`.
 - Biome needs `html.experimentalFullSupportEnabled: true` and `css.parser.tailwindDirectives: true`.

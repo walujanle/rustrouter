@@ -139,11 +139,12 @@ under `strictProxy` logs `strictProxy, refusing direct fallback` and returns `Se
 
 ## OAuth loopback listeners
 
-Each OAuth flow spins a throwaway HTTP server on localhost to catch the redirect. The Codex flow
-uses a fixed port (`1455`) that its OAuth client allows and nothing else, so the server owns it on a
-second axum listener in `services/codex_proxy.rs`; other flows use a per-flow listener in
-`services/oauth_flow.rs`. The server does not shell out to a browser — it hands the URL to the
-frontend, which opens it.
+Only the Codex flow spins a throwaway HTTP server on localhost. It uses a fixed port (`1455`) that
+its OAuth client allows and nothing else, so the server owns it on a second axum listener in
+`services/codex_proxy.rs`. Every other flow has no loopback listener: the redirect lands on the
+dashboard's callback page, which relays the code back over `postMessage` / `BroadcastChannel` /
+`localStorage` (see `docs/FRONTEND.md`). The server does not shell out to a browser — it hands the
+URL to the frontend, which opens it.
 
 Fixed ports can collide with other tools; handle bind failure with a clear error rather than a
 panic. `services/codex_proxy.rs` returns the failure through the session status instead of

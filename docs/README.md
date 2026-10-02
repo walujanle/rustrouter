@@ -1,17 +1,20 @@
 # rustrouter Documentation
 
-rustrouter is an independent AI routing gateway: one OpenAI-compatible endpoint (`/v1/*`) that routes across the upstream providers it ships with, with format translation, model-combo fallback, multi-account fallback, OAuth/API-key credential management, token refresh, usage tracking and an optional auto quota tracker. A Rust backend serves a Vue 3 dashboard.
-
-Two constraints shape everything: it listens on port 20129, and it shares its SQLite database with 9router under a byte-identical schema.
+rustrouter is a local AI routing gateway: one OpenAI-compatible endpoint (`/v1/*`) that routes
+across the upstream providers it ships with. The project README and `../AGENTS.md` cover what it is
+and the hard constraints; this page is the map of the docs.
 
 ## Start here
 
-`PLAN.md` — architecture, risk register, decisions, future direction. Read it first; everything else expands a section of it.
+`PLAN.md` — architecture, risk register, decisions, future direction. Read it first; everything else
+expands a section of it. `CODEBASE-MAP.md` is the file-level index: every crate, module, and
+frontend file with its purpose, for finding where a thing lives before reading code.
 
 ## The rest
 
 | File | Read it when |
 |---|---|
+| `CODEBASE-MAP.md` | you need to locate a file, symbol, or entry point |
 | `DB-PARITY.md` | you are touching `router-db` — schema, byte-exact JSON and date handling, repo semantics, the shared-file concurrency verdict |
 | `CHAT-PIPELINE.md` | you are working on translation, executors, streaming, or account fallback |
 | `OAUTH-AND-CREDENTIALS.md` | you are working on OAuth flows, token refresh, cooldowns, or combos |

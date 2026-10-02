@@ -49,8 +49,10 @@ billing hook fires. `input` must be a string or an array of strings.
 **Search.** Providers: **brave-search**, **exa**, **linkup**, **tavily**, **youcom**. Five
 builders and five normalizers are two `match` statements. `resolve_base_url` honours a
 client-supplied `baseUrl` override through the SSRF guard. The **15 s global deadline** is
-load-bearing: it spans the dedicated attempt, not each request. Failover is non-retriable on
-`{400,401,403,404}`. There is no chat-search lane: a provider without a `searchConfig` has no
+load-bearing: it spans the dedicated attempt, not each request. Failover follows
+`check_fallback_error`: a 4xx cools the account down and falls over only for `401/402/403/429`
+(and the message-matched quota rules); any other 4xx returns the upstream error for this request
+without a fallback. There is no chat-search lane: a provider without a `searchConfig` has no
 search support.
 
 **Fetch.** Providers: **exa**, **firecrawl**, **tavily**. One `match`. `sanitize_header_value`

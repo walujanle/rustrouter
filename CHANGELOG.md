@@ -5,21 +5,33 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
-### Added
-
-- The update prompt follows how rustrouter was installed. `GET /api/version` reports a new
-  `installMethod` (`docker` | `npm` | `binary`), and `installCmd` is the command for that channel
-  instead of the hardcoded npm string. The sidebar and the Settings page show a Docker update
-  (pull the image, remove the container), the npm command, or a link to the latest GitHub release
-  for a direct binary. `rustrouter update-check` prints the same method and command offline.
-
 ### Fixed
 
+- `POST /api/cli-tools/hermes` writes the role into the YAML as a key and into a
+  `Regex`, so an unescaped metacharacter in the request body either panicked
+  `Regex::new` or matched the wrong block. The role is now escaped before it
+  reaches the pattern, and the endpoint rejects any role outside the
+  `[A-Za-z0-9_]` charset the read path already enforces.
+- An upstream `error` event on the CommandCode stream panicked the response
+  generator. It now emits an error frame and stops the stream, matching the
+  openai-responses translator, so a client sees the failure instead of a
+  dropped connection.
+- Credential-refresh and OAuth HTTP calls, and the non-streaming response body
+  read, had no deadline; a stalled upstream could hold the task open
+  indefinitely. Both now time out (30s for OAuth, the streaming first-chunk
+  budget for the body read) and surface a gateway timeout.
+- `GET /api/keys` create/update and `POST /api/auth/login` returned a 500
+  `"Failed to …"` / `"Unexpected end of JSON input"` for a malformed request
+  body. They now return 400 `"Invalid JSON body"`.
+- MITM DNS bypass matched hosts by substring, so `api2.cursor.sh.attacker.example`
+  was treated as `api2.cursor.sh`. The match is now exact or on a dot boundary.
+- `ApiError` no longer renders `DbError` to the client. The `Display` carries
+  absolute filesystem paths and SQLite internals, which now go to the log while
+  the response is a plain 500.
 - A Docker install no longer reports a permanent "update available". The image's binary is
   compiled inside the image, so its hash can never match the release asset's digest; the
   `binaryChanged` signal made the banner nag on every container even when it was up to date. The
   signal is now suppressed for Docker, where the release asset is not the running binary at all.
-
 - Outbound HTTPS no longer panics on Android/Termux with
   `Expect rustls-platform-verifier to be initialized`. `reqwest`'s `rustls`
   feature selects `rustls-platform-verifier`, whose Android backend is
@@ -32,6 +44,40 @@ All notable changes to this project are documented here. Format follows
   so a Termux install without `ca-certificates` would have swapped the panic for
   a silent `UnknownIssuer` on every call. Other targets keep reqwest's default
   OS trust store unchanged.
+
+### Changed
+
+- Dead code removed, including the leftover Claude-provider branches, tool-cloaking
+  helpers, and their unused constants. No behaviour changes.
+- `tower` moved to `router-server` dev-dependencies (route tests only) and
+  unused `async-trait`, `rand`, and `tokio-util` dependencies dropped.
+- The duplicate `EditConnectionModal.vue` under `views/providers/components` is
+  gone; both call sites use the `components/EditConnectionModal.vue` copy, which
+  now also populates the form when opened with a connection already set.
+- Toasts are announced to screen readers (`aria-live`, `role="alert"` for
+  errors), row and card checkboxes carry an accessible name, and the tooltip
+  wrapper reveals on `focus-within` so it is not hover-only.
+- The dashboard is marked `noindex, nofollow` and ships a `robots.txt` that
+  disallows crawling, so an instance on a public address is not indexed.
+- Documentation corrected against the source: test counts, file counts, the
+  Tailwind scan base, OAuth listener behaviour, search failover rules, the
+  registry-derived CLI fingerprint, and the `jwt-secret` / `_meta` behaviour.
+  `.env.example` gained the six environment variables the code reads but the
+  file did not list, and `docs/CODEBASE-MAP.md` is now indexed from
+  `docs/README.md`.
+
+### Security
+
+- `web/package.json` pins `dompurify` 3.4.16 through an override; `monaco-editor`
+  pins 3.4.15 exactly, which carries GHSA-p98j-92pf-mc4p. `npm audit` is clean.
+
+### Added
+
+- The update prompt follows how rustrouter was installed. `GET /api/version` reports a new
+  `installMethod` (`docker` | `npm` | `binary`), and `installCmd` is the command for that channel
+  instead of the hardcoded npm string. The sidebar and the Settings page show a Docker update
+  (pull the image, remove the container), the npm command, or a link to the latest GitHub release
+  for a direct binary. `rustrouter update-check` prints the same method and command offline.
 
 ## [0.1.2] - 2026-10-01
 
