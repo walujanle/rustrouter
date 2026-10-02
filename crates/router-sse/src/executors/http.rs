@@ -252,11 +252,19 @@ fn log_host(url: &str) -> String {
 }
 
 /// Whether the target's host is on the MITM DNS bypass list.
+///
+/// Matched on a dot boundary, not by substring: `h.contains(host)` would also
+/// fire for `evil-api2.cursor.sh.attacker.com`, whose DNS answer the attacker
+/// controls, and the bypass pins the address to a DoH-resolved IP.
 fn should_bypass_mitm_dns(target_url: &str) -> bool {
     url::Url::parse(target_url)
         .ok()
-        .and_then(|u| u.host_str().map(str::to_string))
-        .is_some_and(|h| MITM_BYPASS_HOSTS.iter().any(|host| h.contains(host)))
+        .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))
+        .is_some_and(|h| {
+            MITM_BYPASS_HOSTS
+                .iter()
+                .any(|host| h == *host || h.ends_with(&format!(".{host}")))
+        })
 }
 
 /// Resolve the real IP for a hostname over DoH, cached for the configured DNS
@@ -653,12 +661,21 @@ mod tests {
     }
 
     #[test]
-    fn mitm_hosts_are_matched_by_substring() {
+    fn mitm_hosts_are_matched_exactly_or_on_a_dot_boundary() {
         assert!(should_bypass_mitm_dns(
             "https://daily-cloudcode-pa.googleapis.com/v1internal:x"
         ));
         assert!(should_bypass_mitm_dns("https://api2.cursor.sh/agent"));
+        // A subdomain of a listed host still matches.
+        assert!(should_bypass_mitm_dns("https://x.api2.cursor.sh/agent"));
         assert!(!should_bypass_mitm_dns("https://api.openai.com/v1"));
+        // A host that merely contains a listed host as a substring must not
+        // match: the bypass pins the address to a DoH answer, and this domain
+        // is attacker-controlled.
+        assert!(!should_bypass_mitm_dns(
+            "https://api2.cursor.sh.attacker.example/agent"
+        ));
+        assert!(!should_bypass_mitm_dns("https://notapi2.cursor.sh/agent"));
     }
 
     /// The console log names where a proxy came from; the connection proxy

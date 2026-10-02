@@ -68,7 +68,12 @@ impl ApiError {
 
 impl From<router_db::DbError> for ApiError {
     fn from(e: router_db::DbError) -> Self {
-        Self::internal(e.to_string())
+        // The `DbError` Display carries absolute filesystem paths (the `Io`
+        // variant) and SQLite internals. Those go to the log, not the client:
+        // the response is a plain 500 so a local path never reaches a caller
+        // that may be remote.
+        tracing::error!(target: "router_server::error", "database error: {e}");
+        Self::internal("Internal server error")
     }
 }
 

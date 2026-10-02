@@ -46,7 +46,6 @@ pub const PUBLIC_PREFIXES: &[&str] = &[
     "/v1",
     "/v1beta",
     "/api/v1",
-    "/api/v1beta",
     "/codex",
     "/responses",
     "/systemone",
