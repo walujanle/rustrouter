@@ -59,10 +59,10 @@ pub async fn login(
         return lockout_response(lock.retry_after);
     }
 
-    // A non-JSON body fails the JSON extractor, which becomes a 500 carrying
-    // the parser's message.
+    // A non-JSON body fails the JSON extractor. That is the client's error, so
+    // answer 400 rather than blaming the server with a 500.
     let Ok(Json(payload)) = body else {
-        return ApiError::internal("Unexpected end of JSON input").into_response();
+        return ApiError::bad_request("Invalid JSON body").into_response();
     };
 
     let settings = match state.read(settings::get_settings).await {

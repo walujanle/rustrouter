@@ -26,7 +26,7 @@ pub async fn create(
     body: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
     let Ok(Json(payload)) = body else {
-        return ApiError::internal("Failed to create key").into_response();
+        return ApiError::bad_request("Invalid JSON body").into_response();
     };
     let Some(name) = payload.get("name").and_then(Value::as_str) else {
         return ApiError::bad_request("Name is required").into_response();
@@ -73,7 +73,7 @@ pub async fn update(
     body: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
     let Ok(Json(payload)) = body else {
-        return ApiError::internal("Failed to update key").into_response();
+        return ApiError::bad_request("Invalid JSON body").into_response();
     };
     let exists = state
         .read({

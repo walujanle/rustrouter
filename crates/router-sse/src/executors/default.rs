@@ -658,6 +658,11 @@ fn tokens_to_credentials(tokens: &Value, fallback_refresh: Option<&str>) -> Refr
     }
 }
 
+/// A token/refresh endpoint answers fast; a request that hangs is a dead
+/// endpoint, not a slow one. These are short JSON/form calls, not SSE streams,
+/// so a whole-request deadline is safe here where a client-level one is not.
+const OAUTH_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 async fn post_json(url: &str, body: &Value, proxy_options: &ProxyOptions) -> Option<Value> {
     post_json_with_headers(url, body, &[], proxy_options).await
 }
@@ -678,11 +683,17 @@ pub async fn post_json_with_headers(
     for (k, v) in extra {
         request = request.header(*k, v.as_str());
     }
-    let response = request.send().await.ok()?;
+    let response = tokio::time::timeout(OAUTH_REQUEST_TIMEOUT, request.send())
+        .await
+        .ok()?
+        .ok()?;
     if !response.status().is_success() {
         return None;
     }
-    response.json().await.ok()
+    tokio::time::timeout(OAUTH_REQUEST_TIMEOUT, response.json())
+        .await
+        .ok()?
+        .ok()
 }
 
 pub async fn post_form(
@@ -701,11 +712,17 @@ pub async fn post_form(
     for (k, v) in extra {
         request = request.header(*k, v.as_str());
     }
-    let response = request.send().await.ok()?;
+    let response = tokio::time::timeout(OAUTH_REQUEST_TIMEOUT, request.send())
+        .await
+        .ok()?
+        .ok()?;
     if !response.status().is_success() {
         return None;
     }
-    response.json().await.ok()
+    tokio::time::timeout(OAUTH_REQUEST_TIMEOUT, response.json())
+        .await
+        .ok()?
+        .ok()
 }
 
 #[cfg(test)]

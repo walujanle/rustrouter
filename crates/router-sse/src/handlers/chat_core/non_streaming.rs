@@ -32,7 +32,7 @@ use crate::handlers::chat_core::request_detail::{
 };
 use crate::handlers::chat_core::sse_to_json::parse_sse_to_openai_response;
 use crate::handlers::chat_core::{ChatBody, ChatContext, ChatResult};
-use crate::runtime_config::http_status;
+use crate::runtime_config::{STREAM_FIRST_CHUNK_TIMEOUT_MS, http_status};
 use crate::translator::concerns::finish_reason::from_openai_finish;
 use crate::translator::concerns::primitives::{js_number, js_string, js_truthy};
 use crate::translator::formats;
@@ -630,9 +630,18 @@ pub async fn handle_non_streaming_response(
         .unwrap_or("")
         .to_string();
 
-    let body_text = match provider_response.text().await {
-        Ok(text) => text,
-        Err(error) => {
+    // The connect deadline upstream is time-to-headers only; a provider that
+    // sends headers and then stalls mid-body would otherwise hang this read
+    // forever. The streaming path has a stall watchdog; this is its non-stream
+    // equivalent.
+    let body_text = match tokio::time::timeout(
+        std::time::Duration::from_millis(STREAM_FIRST_CHUNK_TIMEOUT_MS),
+        provider_response.text(),
+    )
+    .await
+    {
+        Ok(Ok(text)) => text,
+        Ok(Err(error)) => {
             tracing::error!(
                 target: "router_sse::chat_core",
                 "[ChatCore] Failed to read response body from {}: {error}",
@@ -641,6 +650,17 @@ pub async fn handle_non_streaming_response(
             return ChatResult::error_logged(
                 http_status::BAD_GATEWAY,
                 &format!("Invalid JSON response from {}", ctx.provider),
+            );
+        }
+        Err(_) => {
+            tracing::error!(
+                target: "router_sse::chat_core",
+                "[ChatCore] Timed out reading response body from {}",
+                ctx.provider
+            );
+            return ChatResult::error_logged(
+                http_status::GATEWAY_TIMEOUT,
+                &format!("Timed out reading response from {}", ctx.provider),
             );
         }
     };

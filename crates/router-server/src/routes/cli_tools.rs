@@ -526,11 +526,15 @@ mod yaml {
     pub static AUX_BLOCK: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r"(?m)^auxiliary:[ \t]*\r?\n((?:(?:[ \t]+.*\r?\n?)|(?:[ \t]*\r?\n))*)").unwrap()
     });
+    /// A role name becomes part of the pattern, so it is escaped: the role
+    /// arrives from the request body and an unescaped metacharacter would
+    /// either panic `Regex::new` or match the wrong block.
     pub fn aux_role(role: &str) -> Regex {
         Regex::new(&format!(
-            r"(?m)^  {role}:[ \t]*\r?\n(?:(?:[ \t]{{4,}}.*\r?\n?)|(?:[ \t]*\r?\n))*"
+            r"(?m)^  {}:[ \t]*\r?\n(?:(?:[ \t]{{4,}}.*\r?\n?)|(?:[ \t]*\r?\n))*",
+            regex::escape(role)
         ))
-        .unwrap()
+        .expect("static pattern with an escaped role")
     }
 
     pub fn model_block(model: &str, base: &str) -> String {
@@ -755,6 +759,14 @@ pub async fn hermes_post(body: Result<Json<Value>, JsonRejection>) -> Response {
     if !selections.iter().any(|(role, _)| role == "default") {
         return ApiError::bad_request("baseUrl and model are required").into_response();
     }
+    // A role is written into the YAML as a key and into a `Regex`, so it must
+    // match the charset the read path already enforces (`[A-Za-z0-9_]+`).
+    // Anything else is refused before it can corrupt the file or the pattern.
+    if !selections.iter().all(|(role, _)| {
+        !role.is_empty() && role.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    }) {
+        return ApiError::bad_request("invalid role").into_response();
+    }
 
     let (Some(config_path), Some(env_path)) = (hermes_config_path(), hermes_env_path()) else {
         return ApiError::internal("No home directory").into_response();
@@ -906,6 +918,17 @@ mod tests {
         let removed = yaml::remove_model(&replaced);
         assert!(!removed.contains("default: \"m2\""));
         assert!(removed.contains("other: 1"));
+    }
+
+    #[test]
+    fn hermes_aux_role_with_regex_metacharacters_does_not_panic() {
+        // The role comes from the request body; an unescaped `(` used to make
+        // `aux_role` panic on `Regex::new`.
+        let yaml = "auxiliary:\n  fast:\n    provider: \"custom\"\n    model: \"x\"\n    base_url: \"http://localhost:20129/v1\"\n";
+        let updated = yaml::upsert_aux(yaml, "a(b", "  a(b:\n    provider: \"custom\"\n");
+        assert!(updated.contains("a(b"));
+        let removed = yaml::remove_aux(&updated, "a(b");
+        assert!(!removed.contains("a(b"));
     }
 
     #[test]
