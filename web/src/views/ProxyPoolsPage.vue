@@ -850,6 +850,7 @@ function handleConfirm() {
             <input
               type="checkbox"
               :checked="selectedIds.includes(pool.id)"
+              :aria-label="`Select ${pool.name}`"
               class="mt-1 size-4 shrink-0 rounded border-black/20 dark:border-white/20"
               @change="toggleSelect(pool.id)"
             />

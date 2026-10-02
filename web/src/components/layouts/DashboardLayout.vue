@@ -48,10 +48,17 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="flex h-screen w-full overflow-hidden bg-bg">
-    <div class="fixed top-4 right-4 z-80 flex w-[min(92vw,380px)] flex-col gap-2">
+    <!-- `aria-live` so a screen reader announces toasts; errors are assertive
+         (`role="alert"`), the rest polite. -->
+    <div
+      class="fixed top-4 right-4 z-80 flex w-[min(92vw,380px)] flex-col gap-2"
+      aria-live="polite"
+      aria-atomic="false"
+    >
       <div
         v-for="n in notifications.notifications"
         :key="n.id"
+        :role="n.type === 'error' ? 'alert' : 'status'"
         :class="`rounded-lg border px-3 py-2 shadow-lg backdrop-blur-sm ${getToastStyle(n.type).wrapper}`"
       >
         <div class="flex items-start gap-2">

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import { RouterLink, useRoute, useRouter } from "vue-router";
-
+import EditConnectionModal from "@/components/EditConnectionModal.vue";
 import NoAuthProxyCard from "@/components/NoAuthProxyCard.vue";
 import OAuthModal from "@/components/OAuthModal.vue";
 import CardSkeleton from "@/components/ui/CardSkeleton.vue";
@@ -25,7 +25,6 @@ import BulkImportGrokCliModal from "./providers/components/BulkImportGrokCliModa
 import CompatibleModelsSection from "./providers/components/CompatibleModelsSection.vue";
 import ConnectionRow from "./providers/components/ConnectionRow.vue";
 import EditCompatibleNodeModal from "./providers/components/EditCompatibleNodeModal.vue";
-import EditConnectionModal from "./providers/components/EditConnectionModal.vue";
 import ModelRow from "./providers/components/ModelRow.vue";
 
 const ONE_BY_ONE_DELAY_MS = 1000;
@@ -1334,6 +1333,7 @@ watch(connections, () => {
               <input
                 type="checkbox"
                 :checked="isSelected(conn.id)"
+                :aria-label="`Select ${conn.name || 'connection'}`"
                 class="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
                 @change="toggleSelectConnection(conn.id)"
               />

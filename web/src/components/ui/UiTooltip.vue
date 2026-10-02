@@ -25,10 +25,13 @@ const bgClass = computed(() => (props.color ? "" : "bg-gray-900"));
 </script>
 
 <template>
+  <!-- `focus-within` reveals the tooltip when the wrapped control is focused,
+       so it is reachable by keyboard and not hover-only. -->
   <div class="relative inline-flex group/tt">
     <slot />
     <div
-      :class="`pointer-events-none absolute ${posClass} z-50 w-max max-w-56 rounded px-2 py-1 text-[11px] leading-snug ${bgClass} text-white opacity-0 group-hover/tt:opacity-100 transition-opacity duration-150 whitespace-normal`"
+      role="tooltip"
+      :class="`pointer-events-none absolute ${posClass} z-50 w-max max-w-56 rounded px-2 py-1 text-[11px] leading-snug ${bgClass} text-white opacity-0 group-hover/tt:opacity-100 group-focus-within/tt:opacity-100 transition-opacity duration-150 whitespace-normal`"
       :style="bgStyle"
     >
       {{ props.text }}
