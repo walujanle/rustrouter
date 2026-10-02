@@ -183,12 +183,8 @@ fn header_value(headers: &HashMap<String, String>, key: &str) -> Option<String> 
     headers.get(key).and_then(|v| normalize_session_id(v))
 }
 
-/// `extractClientSessionId(headers, body, scope)`.
-fn extract_client_session_id(
-    headers: &HashMap<String, String>,
-    body: &Value,
-    scope: &str,
-) -> Option<String> {
+/// `extractClientSessionId(headers, body)`.
+fn extract_client_session_id(headers: &HashMap<String, String>, body: &Value) -> Option<String> {
     let claude = extract_claude_code_session(
         body.get("metadata")
             .and_then(|m| m.get("user_id"))
@@ -203,9 +199,7 @@ fn extract_client_session_id(
             return Some(v);
         }
     }
-    if scope != "kiro"
-        && let Some(v) = header_value(headers, "x-client-request-id")
-    {
+    if let Some(v) = header_value(headers, "x-client-request-id") {
         return Some(v);
     }
 
@@ -217,14 +211,10 @@ fn extract_client_session_id(
                 .and_then(normalize_session_id)
         })
         .or_else(|| {
-            if scope == "kiro" {
-                None
-            } else {
-                body.get("metadata")
-                    .and_then(|m| m.get("user_id"))
-                    .and_then(Value::as_str)
-                    .and_then(normalize_session_id)
-            }
+            body.get("metadata")
+                .and_then(|m| m.get("user_id"))
+                .and_then(Value::as_str)
+                .and_then(normalize_session_id)
         })
 }
 
@@ -312,20 +302,15 @@ impl Default for SessionIdentityInput<'_> {
 /// `resolveSessionIdentity({headers, body, connectionId, workspaceId, scope})`.
 /// Returns `(session_id, ephemeral)`.
 pub fn resolve_session_identity(input: &SessionIdentityInput<'_>) -> (String, bool) {
-    if let Some(client) = extract_client_session_id(input.headers, input.body, input.scope) {
+    if let Some(client) = extract_client_session_id(input.headers, input.body) {
         return (client, false);
     }
-    if input.scope != "kiro" {
-        let scope_key = format!("{}:{}", input.scope, input.connection_id.unwrap_or(""));
-        if let Some(from_assistant) = assistant_text_session_id(&scope_key, input.body) {
-            return (from_assistant, false);
-        }
+    let scope_key = format!("{}:{}", input.scope, input.connection_id.unwrap_or(""));
+    if let Some(from_assistant) = assistant_text_session_id(&scope_key, input.body) {
+        return (from_assistant, false);
     }
     if let Some(ws) = input.workspace_id.and_then(normalize_session_id) {
         return (ws, false);
-    }
-    if input.scope == "kiro" {
-        return (generate_binary_style_id(), true);
     }
     (derive_session_id(input.connection_id), false)
 }
@@ -435,30 +420,17 @@ mod tests {
     }
 
     #[test]
-    fn x_client_request_id_is_ignored_for_kiro_scope() {
+    fn x_client_request_id_is_used_when_no_session_header_is_present() {
         let mut headers = HashMap::new();
         headers.insert("x-client-request-id".into(), "req-1".into());
         let body = json!({});
-        let kiro = SessionIdentityInput {
-            headers: &headers,
-            body: &body,
-            scope: "kiro",
-            ..Default::default()
-        };
-        let (id, ephemeral) = resolve_session_identity(&kiro);
-        assert!(
-            ephemeral,
-            "kiro falls to an ephemeral id when nothing else matches"
-        );
-        assert!(!id.is_empty());
-
-        let other = SessionIdentityInput {
+        let input = SessionIdentityInput {
             headers: &headers,
             body: &body,
             scope: "claude",
             ..Default::default()
         };
-        assert_eq!(resolve_session_id(&other), "req-1");
+        assert_eq!(resolve_session_id(&input), "req-1");
     }
 
     #[test]

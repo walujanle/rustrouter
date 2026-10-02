@@ -37,9 +37,7 @@ static CLAUDE_SERVER_TOOL_USE_ID: LazyLock<Regex> =
 
 /// `handlesThinkingBlocks(provider)`.
 fn handles_thinking_blocks(provider: Option<&str>) -> bool {
-    provider == Some("claude")
-        || provider.is_some_and(|p| p.starts_with("anthropic-compatible"))
-        || provider == Some("deepseek")
+    provider.is_some_and(|p| p.starts_with("anthropic-compatible")) || provider == Some("deepseek")
 }
 
 /// `lastCacheableToolIndex(tools)`: the index of the last tool that is not
@@ -847,7 +845,6 @@ pub fn prepare_claude_request(body: &mut Value, args: &PrepareClaudeArgs<'_>) {
             }
 
             if handles_thinking_blocks(provider) {
-                let is_claude_native = provider == Some("claude");
                 let is_deepseek = provider == Some("deepseek");
                 let mut has_tool_use = false;
                 let mut has_kept_thinking = false;
@@ -861,14 +858,7 @@ pub fn prepare_claude_request(body: &mut Value, args: &PrepareClaudeArgs<'_>) {
                         t == claude_block::THINKING || t == claude_block::REDACTED_THINKING;
                     if is_thinking {
                         let mut block = block;
-                        if is_claude_native {
-                            if is_valid_claude_signature(
-                                block.get("signature").and_then(Value::as_str),
-                            ) {
-                                has_kept_thinking = true;
-                                kept.push(block);
-                            }
-                        } else if is_deepseek {
+                        if is_deepseek {
                             has_kept_thinking = true;
                             kept.push(block);
                         } else {
@@ -895,46 +885,44 @@ pub fn prepare_claude_request(body: &mut Value, args: &PrepareClaudeArgs<'_>) {
     // 3. Tools.
     if let Some(tools) = body.get("tools").and_then(Value::as_array).cloned() {
         let mut tools = tools;
-        if provider != Some("claude") {
-            let supported_types = transport_quirk(provider, "claudeSupportedToolTypes")
-                .and_then(Value::as_array)
-                .cloned();
-            let has_whitelist = supported_types.is_some();
-            let supported_types = supported_types.unwrap_or_default();
-            tools = tools
-                .into_iter()
-                .filter(|tool| {
-                    let t = tool.get("type").and_then(Value::as_str);
-                    match t {
-                        None | Some("function") => true,
-                        Some(t) => {
-                            if has_whitelist {
-                                supported_types.iter().any(|s| s.as_str() == Some(t))
-                            } else {
-                                false
-                            }
+        let supported_types = transport_quirk(provider, "claudeSupportedToolTypes")
+            .and_then(Value::as_array)
+            .cloned();
+        let has_whitelist = supported_types.is_some();
+        let supported_types = supported_types.unwrap_or_default();
+        tools = tools
+            .into_iter()
+            .filter(|tool| {
+                let t = tool.get("type").and_then(Value::as_str);
+                match t {
+                    None | Some("function") => true,
+                    Some(t) => {
+                        if has_whitelist {
+                            supported_types.iter().any(|s| s.as_str() == Some(t))
+                        } else {
+                            false
                         }
                     }
-                })
-                .map(|tool| {
-                    if let Some(function) = tool.get("function") {
-                        return json!({
-                            "name": function.get("name"),
-                            "description": function.get("description"),
-                            "input_schema": function.get("parameters"),
-                        });
-                    }
-                    if has_whitelist {
-                        return tool;
-                    }
-                    let mut t = tool;
-                    if let Some(obj) = t.as_object_mut() {
-                        obj.shift_remove("type");
-                    }
-                    t
-                })
-                .collect();
-        }
+                }
+            })
+            .map(|tool| {
+                if let Some(function) = tool.get("function") {
+                    return json!({
+                        "name": function.get("name"),
+                        "description": function.get("description"),
+                        "input_schema": function.get("parameters"),
+                    });
+                }
+                if has_whitelist {
+                    return tool;
+                }
+                let mut t = tool;
+                if let Some(obj) = t.as_object_mut() {
+                    obj.shift_remove("type");
+                }
+                t
+            })
+            .collect();
 
         let last_cacheable = last_cacheable_tool_index_slice(&tools);
         tools = tools
@@ -965,15 +953,12 @@ pub fn prepare_claude_request(body: &mut Value, args: &PrepareClaudeArgs<'_>) {
     }
 
     // Anthropic reads images inside tool_result; other endpoints do not.
-    if provider != Some("claude")
-        && !provider.is_some_and(|p| p.starts_with("anthropic-compatible"))
-    {
+    if !provider.is_some_and(|p| p.starts_with("anthropic-compatible")) {
         hoist_tool_result_images(body);
     }
 
     // Cloaking for OAuth tokens.
-    let is_claude_like = provider == Some("claude")
-        || provider.is_some_and(|p| p.starts_with("anthropic-compatible"));
+    let is_claude_like = provider.is_some_and(|p| p.starts_with("anthropic-compatible"));
     if is_claude_like && let Some(api_key) = args.api_key {
         let sid = match args.session_id {
             Some(sid) => sid.to_string(),

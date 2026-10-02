@@ -3,9 +3,9 @@
 //!
 //! Deliberately a plain owned struct rather than a borrowed trait object: the
 //! translators read a fixed handful of fields, and the one write — the session
-//! id `translate_request` stashes for the Gemini/Kiro envelope builders to read
-//! later in the same call — has to be visible to a later translator, so the
-//! struct is passed mutably and then reborrowed immutably.
+//! id `translate_request` stashes for a later translator to read in the same
+//! call — has to be visible downstream, so the struct is passed mutably and
+//! then reborrowed immutably.
 //!
 //! `raw_headers` is stored lower-cased. The header lookup accepts either case,
 //! which collapses to a single lower-cased map here.
@@ -40,8 +40,8 @@ pub struct Credentials {
     pub provider_specific_data: Map<String, Value>,
     /// Client request headers, lower-cased keys.
     pub raw_headers: HashMap<String, String>,
-    /// The per-request session id: set by `translate_request`, read by the
-    /// Gemini and Kiro envelope builders.
+    /// The per-request session id: set by `translate_request`, read downstream
+    /// in the same call.
     pub client_session_id: Option<String>,
     /// The source-format-matched endpoint for a multi-endpoint provider, set by
     /// the chat pipeline so the executor can skip translation. It overrides the

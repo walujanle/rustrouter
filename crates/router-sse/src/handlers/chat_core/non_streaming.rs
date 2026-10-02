@@ -3,19 +3,15 @@
 //! Most of the conversions here are hand-written because no registry entry
 //! exists for the pair — the registry's response translators are streaming
 //! shaped, and a non-streaming body needs one whole-body conversion instead.
-//! Three of them matter:
+//! Two of them matter:
 //!
-//! * **Gemini** — the provider's `candidates[0].content.parts` is
-//!   flattened, with `thought` parts routed to `reasoning_content` and inline
-//!   image data inlined as a markdown data URL.
 //! * **Claude** — `content` blocks are flattened, and the ```json fence some
 //!   providers (kimi) wrap their JSON in is stripped.
 //! * **Responses** — `chat.completion` becomes a Responses `output` array so a
 //!   Codex client's `stream:false` request does not lose its tool calls.
 //!
-//! `unwrap_cline_envelope` runs before anything reads `choices`/`usage`, and
-//! `decloakToolNames` runs on the *raw* provider body, before translation.
-//! Both orders are load-bearing.
+//! `unwrap_cline_envelope` runs before anything reads `choices`/`usage`; that
+//! order is load-bearing.
 //!
 //! DB-free: usage saving, log appending and pending-request tracking become
 //! [`ChatResult`] fields the server persists.
@@ -37,7 +33,6 @@ use crate::translator::concerns::finish_reason::from_openai_finish;
 use crate::translator::concerns::primitives::{js_number, js_string, js_truthy};
 use crate::translator::formats;
 use crate::translator::schema::role;
-use crate::utils::claude_cloaking::decloak_tool_names;
 use crate::utils::fingerprint::restore_tool_names;
 
 /// `parseToolArguments(value)`.
@@ -167,41 +162,6 @@ pub fn open_ai_completion_to_responses(
     super::responses_convert::completion_to_responses(response_body, custom_tool_names, None)
 }
 
-/// JS string concatenation for `textContent += part.text`: `null` becomes
-/// `"null"`, an array joins with `,`, an object is `"[object Object]"`.
-fn js_concat(target: &mut String, value: &Value) {
-    match value {
-        Value::String(s) => target.push_str(s),
-        Value::Number(n) => target.push_str(&n.to_string()),
-        Value::Bool(b) => target.push_str(if *b { "true" } else { "false" }),
-        Value::Null => target.push_str("null"),
-        Value::Array(items) => {
-            let joined: Vec<String> = items
-                .iter()
-                .map(|i| match i {
-                    Value::Null => String::new(),
-                    other => js_string(other),
-                })
-                .collect();
-            target.push_str(&joined.join(","));
-        }
-        Value::Object(_) => target.push_str("[object Object]"),
-    }
-}
-
-/// `Math.floor(new Date(createTime || Date.now()).getTime() / 1000)`.
-fn created_seconds(create_time: Option<&Value>) -> i64 {
-    let millis = create_time
-        .filter(|v| js_truthy(v))
-        .and_then(|v| match v {
-            Value::Number(n) => n.as_i64(),
-            Value::String(s) => router_db::time::parse_iso(s).map(|d| d.timestamp_millis()),
-            _ => None,
-        })
-        .unwrap_or_else(router_db::time::now_ms);
-    millis / 1000
-}
-
 /// `translateNonStreamingResponse(responseBody, targetFormat, sourceFormat, customToolNames)`.
 ///
 /// The parameter names read backwards from the request direction:
@@ -225,188 +185,6 @@ pub fn translate_non_streaming_response(
     }
     if target_format == formats::OPENAI {
         return response_body;
-    }
-
-    // Gemini family
-    if matches!(
-        target_format,
-        formats::GEMINI | formats::GEMINI_CLI | formats::VERTEX
-    ) {
-        let response = response_body.get("response").unwrap_or(&response_body);
-        if response.get("candidates").and_then(|c| c.get(0)).is_none() {
-            return response_body;
-        }
-        let candidate = &response["candidates"][0];
-        let content = candidate.get("content");
-        let usage = response
-            .get("usageMetadata")
-            .or_else(|| response_body.get("usageMetadata"));
-
-        let mut text_content = String::new();
-        let mut reasoning_content = String::new();
-        let mut tool_calls: Vec<Value> = Vec::new();
-
-        if let Some(parts) = content
-            .and_then(|c| c.get("parts"))
-            .and_then(Value::as_array)
-        {
-            for part in parts {
-                if part.get("thought").and_then(Value::as_bool) == Some(true)
-                    && part.get("text").is_some_and(js_truthy)
-                {
-                    js_concat(&mut reasoning_content, &part["text"]);
-                } else if let Some(text) = part.get("text") {
-                    js_concat(&mut text_content, text);
-                }
-
-                if let Some(function_call) = part.get("functionCall") {
-                    let now = router_db::time::now_ms();
-                    tool_calls.push(json!({
-                        "id": format!(
-                            "call_{}_{now}_{}",
-                            function_call.get("name").map(js_string).unwrap_or_default(),
-                            tool_calls.len()
-                        ),
-                        "type": "function",
-                        "function": {
-                            "name": function_call.get("name").map(js_string).unwrap_or_default(),
-                            "arguments": serde_json::to_string(
-                                function_call.get("args").filter(|v| js_truthy(v)).unwrap_or(&json!({}))
-                            ).unwrap_or_else(|_| "{}".to_string()),
-                        },
-                    }));
-                }
-
-                let inline_data = part.get("inlineData").or_else(|| part.get("inline_data"));
-                if let Some(data) = inline_data
-                    .and_then(|d| d.get("data"))
-                    .filter(|v| js_truthy(v))
-                {
-                    let mime_type = inline_data
-                        .and_then(|d| d.get("mimeType").or_else(|| d.get("mime_type")))
-                        .filter(|v| js_truthy(v))
-                        .map(js_string)
-                        .unwrap_or_else(|| "image/png".to_string());
-                    text_content.push_str(&format!(
-                        "\n![image](data:{mime_type};base64,{})\n",
-                        js_string(data)
-                    ));
-                }
-            }
-        }
-
-        let mut message = Map::new();
-        message.insert("role".into(), json!(role::ASSISTANT));
-        if !text_content.is_empty() {
-            message.insert("content".into(), json!(text_content));
-        }
-        if !reasoning_content.is_empty() {
-            message.insert("reasoning_content".into(), json!(reasoning_content));
-        }
-        if !tool_calls.is_empty() {
-            message.insert("tool_calls".into(), Value::Array(tool_calls));
-        }
-        if !message.contains_key("content") && !message.contains_key("tool_calls") {
-            message.insert("content".into(), json!(""));
-        }
-
-        let has_tool_calls = message
-            .get("tool_calls")
-            .and_then(Value::as_array)
-            .is_some_and(|t| !t.is_empty());
-        let mut finish_reason = candidate
-            .get("finishReason")
-            .filter(|v| js_truthy(v))
-            .map(js_string)
-            .unwrap_or_else(|| "stop".to_string())
-            .to_lowercase();
-        if finish_reason == "stop" && has_tool_calls {
-            finish_reason = "tool_calls".to_string();
-        }
-
-        let mut result = Map::new();
-        result.insert(
-            "id".into(),
-            json!(format!(
-                "chatcmpl-{}",
-                response
-                    .get("responseId")
-                    .filter(|v| js_truthy(v))
-                    .map(js_string)
-                    .unwrap_or_else(|| router_db::time::now_ms().to_string())
-            )),
-        );
-        result.insert("object".into(), json!("chat.completion"));
-        result.insert(
-            "created".into(),
-            json!(created_seconds(response.get("createTime"))),
-        );
-        result.insert(
-            "model".into(),
-            json!(
-                response
-                    .get("modelVersion")
-                    .filter(|v| js_truthy(v))
-                    .map(js_string)
-                    .unwrap_or_else(|| "gemini".to_string())
-            ),
-        );
-        result.insert(
-            "choices".into(),
-            Value::Array(vec![json!({
-                "index": 0,
-                "message": Value::Object(message),
-                "finish_reason": finish_reason,
-            })]),
-        );
-
-        if let Some(usage) = usage {
-            let thoughts = usage
-                .get("thoughtsTokenCount")
-                .filter(|v| js_truthy(v))
-                .map(|v| js_number(Some(v)))
-                .unwrap_or(0);
-            let mut usage_obj = Map::new();
-            usage_obj.insert(
-                "prompt_tokens".into(),
-                json!(
-                    usage
-                        .get("promptTokenCount")
-                        .filter(|v| js_truthy(v))
-                        .map(|v| js_number(Some(v)))
-                        .unwrap_or(0)
-                        + thoughts
-                ),
-            );
-            usage_obj.insert(
-                "completion_tokens".into(),
-                json!(
-                    usage
-                        .get("candidatesTokenCount")
-                        .filter(|v| js_truthy(v))
-                        .map(|v| js_number(Some(v)))
-                        .unwrap_or(0)
-                ),
-            );
-            usage_obj.insert(
-                "total_tokens".into(),
-                json!(
-                    usage
-                        .get("totalTokenCount")
-                        .filter(|v| js_truthy(v))
-                        .map(|v| js_number(Some(v)))
-                        .unwrap_or(0)
-                ),
-            );
-            if thoughts > 0 {
-                usage_obj.insert(
-                    "completion_tokens_details".into(),
-                    json!({ "reasoning_tokens": thoughts }),
-                );
-            }
-            result.insert("usage".into(), Value::Object(usage_obj));
-        }
-        return Value::Object(result);
     }
 
     // Claude
@@ -703,10 +481,6 @@ pub async fn handle_non_streaming_response(
         response_body
     );
 
-    // Decloak on the raw Claude body, before any translation.
-    let mut response_body = response_body;
-    decloak_tool_names(&mut response_body, ctx.tool_name_map);
-
     let usage = extract_usage_from_response(&response_body);
     let latency = router_db::time::now_ms() - ctx.request_start_time_ms;
     if let Some(usage) = &usage {
@@ -985,42 +759,6 @@ mod tests {
         );
         assert_eq!(out["content"][1], json!({"type": "text", "text": "hi"}));
         assert_eq!(out["usage"]["input_tokens"], json!(2));
-    }
-
-    #[test]
-    fn gemini_to_openai_splits_thought_parts_and_inlines_images() {
-        let body = json!({
-            "candidates": [{
-                "content": {"parts": [
-                    {"thought": true, "text": "plan"},
-                    {"text": "answer"},
-                    {"functionCall": {"name": "shell", "args": {"cmd": "ls"}}},
-                    {"inlineData": {"mimeType": "image/png", "data": "AAA"}},
-                ]},
-                "finishReason": "STOP",
-            }],
-            "usageMetadata": {"promptTokenCount": 5, "candidatesTokenCount": 3, "totalTokenCount": 9, "thoughtsTokenCount": 2},
-            "modelVersion": "gemini-x",
-            "responseId": "resp-1",
-            "createTime": "2026-01-01T00:00:00.000Z",
-        });
-        let out = translate_non_streaming_response(body, formats::GEMINI, formats::OPENAI, None);
-        let message = &out["choices"][0]["message"];
-        assert_eq!(message["reasoning_content"], json!("plan"));
-        assert_eq!(
-            message["content"],
-            json!("answer\n![image](data:image/png;base64,AAA)\n")
-        );
-        assert_eq!(message["tool_calls"][0]["function"]["name"], json!("shell"));
-        assert_eq!(out["choices"][0]["finish_reason"], json!("tool_calls"));
-        assert_eq!(out["model"], json!("gemini-x"));
-        assert_eq!(out["created"], json!(1_767_225_600));
-        // `thoughtsTokenCount` folds into prompt_tokens and is echoed as a detail.
-        assert_eq!(out["usage"]["prompt_tokens"], json!(7));
-        assert_eq!(
-            out["usage"]["completion_tokens_details"]["reasoning_tokens"],
-            json!(2)
-        );
     }
 
     #[test]

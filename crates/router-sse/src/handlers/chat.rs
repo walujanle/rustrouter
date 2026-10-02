@@ -7,8 +7,8 @@
 //! rate limit, and the cooldown bookkeeping that makes that safe lives in
 //! `services::auth`.
 //!
-//! `headroom` and `pxpipe` are dropped, so the settings read here does not
-//! carry their fields. Request bodies are not persisted.
+//! `pxpipe` is dropped, so the settings read here does not carry its fields.
+//! Request bodies are not persisted.
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;

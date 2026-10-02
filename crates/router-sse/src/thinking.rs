@@ -234,8 +234,6 @@ fn format_to_native(target_format: &str) -> &'static str {
     match target_format {
         "openai" | "openai-responses" | "openai-response" | "codex" => "openai",
         "claude" => "claude-budget",
-        "gemini" | "gemini-cli" | "vertex" => "gemini-budget",
-        "kiro" => "kiro",
         "commandcode" => "commandcode",
         _ => "openai",
     }
@@ -246,7 +244,7 @@ fn format_to_native(target_format: &str) -> &'static str {
 fn is_native_only_format(fmt: &str) -> bool {
     matches!(
         fmt,
-        "gemini-level" | "gemini-budget" | "claude-budget" | "claude-adaptive" | "kiro"
+        "gemini-level" | "gemini-budget" | "claude-budget" | "claude-adaptive"
     )
 }
 
@@ -637,8 +635,6 @@ fn apply_format(
                 obj.insert("reasoning_effort".into(), json!(effort));
             }
         }
-        // Kiro thinking is injected as a system tag by openai-to-kiro, not here.
-        "kiro" => {}
         "commandcode" => {
             // The native CLI sends reasoning_effort inside params of the
             // /alpha/generate envelope.

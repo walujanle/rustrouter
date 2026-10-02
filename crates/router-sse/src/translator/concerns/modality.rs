@@ -254,16 +254,12 @@ pub fn strip_unsupported_modalities(
     }
 
     match source_format {
-        formats::OPENAI | formats::KIRO | formats::CURSOR | formats::COMMANDCODE => {
-            strip_openai(body, caps)
-        }
+        formats::OPENAI | formats::COMMANDCODE => strip_openai(body, caps),
         formats::CLAUDE => strip_claude(body, caps),
         formats::OPENAI_RESPONSES | formats::OPENAI_RESPONSE | formats::CODEX => {
             strip_responses(body, caps)
         }
-        formats::GEMINI | formats::GEMINI_CLI | formats::VERTEX => {
-            strip_gemini_parts(body.get_mut("contents"), caps)
-        }
+        formats::GEMINI => strip_gemini_parts(body.get_mut("contents"), caps),
         _ => strip_openai(body, caps),
     }
     true

@@ -36,7 +36,6 @@ const activeProviders = ref<Array<Record<string, any>>>([]);
 const comboStrategies = ref<Record<string, { fallbackStrategy?: string; judgeModel?: string }>>({});
 const capacityAdapter = ref<Record<string, CapEntry>>({ ...EMPTY_CAPACITY_ADAPTER });
 const confirmState = ref<ConfirmState | null>(null);
-const presetLoading = ref<string | null>(null); // "cursor" | "claude" | null
 const selectedIds = ref<string[]>([]);
 const bulkBusy = ref(false);
 const { copied, copy } = useCopyToClipboard();
@@ -73,66 +72,6 @@ function toggleSelectAll() {
 
 function clearSelection() {
 	selectedIds.value = [];
-}
-
-async function handleGeneratePresets(source: string) {
-	const label = source === "cursor" ? "Cursor Default" : "Claude Default";
-	presetLoading.value = source;
-	try {
-		const previewRes = await fetch(`/api/combos/presets?source=${source}`);
-		const preview = await previewRes.json();
-		if (!previewRes.ok) {
-			alert(preview.error || `Failed to preview ${label}`);
-			return;
-		}
-
-		const toCreate = preview.toCreate ?? (preview.items || []).filter((i: any) => !i.exists).length;
-		const toSkip = preview.toSkip ?? (preview.items || []).filter((i: any) => i.exists).length;
-		const total = (preview.items || []).length;
-
-		if (total === 0) {
-			alert(`No ${label} models available to generate.`);
-			return;
-		}
-
-		if (toCreate === 0) {
-			alert(`All ${total} ${label} combos already exist. Nothing to create.`);
-			return;
-		}
-
-		confirmState.value = {
-			title: `Generate ${label}`,
-			message: `Create ${toCreate} combo${toCreate === 1 ? "" : "s"} named like ${source === "cursor" ? "Cursor" : "Claude"} model IDs (seeded with cu/… or cc/…). ${toSkip} already exist and will be skipped. You can edit any combo afterward to add fallbacks.`,
-			confirmText: "Generate",
-			variant: "primary",
-			onConfirm: async () => {
-				if (confirmState.value) confirmState.value = { ...confirmState.value, loading: true };
-				try {
-					const res = await fetch("/api/combos/presets", {
-						method: "POST",
-						headers: { "Content-Type": "application/json" },
-						body: JSON.stringify({ source }),
-					});
-					const data = await res.json();
-					if (!res.ok) {
-						alert(data.error || `Failed to generate ${label}`);
-						return;
-					}
-					await fetchData();
-					confirmState.value = null;
-				} catch (error) {
-					console.log(`Error generating ${label}:`, error);
-					alert(`Failed to generate ${label}`);
-					if (confirmState.value) confirmState.value = { ...confirmState.value, loading: false };
-				}
-			},
-		};
-	} catch (error) {
-		console.log(`Error previewing ${label}:`, error);
-		alert(`Failed to preview ${label}`);
-	} finally {
-		presetLoading.value = null;
-	}
 }
 
 async function fetchData() {
@@ -376,39 +315,11 @@ function onConfirmAction() {
           <li><span class="font-medium text-text-main">Round Robin</span> — rotates models across requests to spread load</li>
           <li><span class="font-medium text-text-main">Fusion</span> — queries all models in parallel, then a judge synthesizes one answer. Best quality, but costs the most: every request bills all panel models + the judge (N+1 calls)</li>
         </ul>
-        <p class="hidden text-xs text-text-muted mt-3 max-w-2xl">
-          <span class="font-medium text-text-main">Cursor / Claude Default</span> create combos named exactly like those clients&apos; model IDs (e.g. <code class="font-mono">composer-2.5</code>, <code class="font-mono">opus</code>), seeded with the matching <code class="font-mono">cu/…</code> or <code class="font-mono">cc/…</code> route so traffic can hit RustRouter without the prefix.
-          {{ " " }}Note: Cursor IDE itself often blocks built-in Composer / Grok from Override OpenAI Base URL (&quot;model does not support custom API&quot;); add them via Cursor&apos;s <span class="font-medium text-text-main">Add Custom Model</span> using the combo name, or pick a model Cursor allows through the custom endpoint.
-        </p>
       </div>
       <div class="flex w-full flex-col gap-2 sm:w-auto sm:items-stretch">
         <Button icon="add" class="w-full sm:w-auto whitespace-nowrap" @click="showCreateModal = true">
           Create Combo
         </Button>
-        <div class="hidden">
-          <Button
-            variant="secondary"
-            size="sm"
-            icon="edit_note"
-            :loading="presetLoading === 'cursor'"
-            :disabled="!!presetLoading"
-            class="w-full whitespace-nowrap"
-            @click="handleGeneratePresets('cursor')"
-          >
-            Cursor Default
-          </Button>
-          <Button
-            variant="secondary"
-            size="sm"
-            icon="smart_toy"
-            :loading="presetLoading === 'claude'"
-            :disabled="!!presetLoading"
-            class="w-full whitespace-nowrap"
-            @click="handleGeneratePresets('claude')"
-          >
-            Claude Default
-          </Button>
-        </div>
       </div>
     </div>
 

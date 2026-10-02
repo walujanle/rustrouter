@@ -6,11 +6,6 @@ export {
 	resolveProviderIconId,
 } from "./providerIcon";
 
-/** Generate unique ID (UUID v4). */
-export function generateId(): string {
-	return crypto.randomUUID();
-}
-
 /** Extract error code from an error message (401, 429, 503…). */
 export function getErrorCode(
 	lastError: string | null | undefined,

@@ -436,107 +436,80 @@ async fn handle_codex_responses_sse(
     let has_tool_calls = !tool_calls.is_empty();
 
     let mut final_resp = Map::new();
-    if matches!(ctx.source_format, formats::GEMINI | formats::GEMINI_CLI) {
-        final_resp.insert(
-            "response".into(),
-            json!({
-                "candidates": [{
-                    "content": {
-                        "role": "model",
-                        "parts": [{ "text": text_content.clone().unwrap_or_default() }],
-                    },
-                    "finishReason": "STOP",
-                    "index": 0,
-                }],
-                "usageMetadata": {
-                    "promptTokenCount": in_tokens,
-                    "candidatesTokenCount": out_tokens,
-                    "totalTokenCount": in_tokens + out_tokens,
-                },
-                "modelVersion": ctx.model,
-                "responseId": json_response
-                    .get("id")
-                    .filter(|v| js_truthy(v))
-                    .cloned()
-                    .unwrap_or(json!(format!("resp_{now}"))),
+    let mut message = Map::new();
+    message.insert("role".into(), json!(role::ASSISTANT));
+    message.insert(
+        "content".into(),
+        text_content
+            .clone()
+            .filter(|t| !t.is_empty())
+            .map(|t| json!(t))
+            .unwrap_or_else(|| {
+                if has_tool_calls {
+                    Value::Null
+                } else {
+                    json!("")
+                }
             }),
-        );
-    } else {
-        let mut message = Map::new();
-        message.insert("role".into(), json!(role::ASSISTANT));
-        message.insert(
-            "content".into(),
-            text_content
-                .clone()
-                .filter(|t| !t.is_empty())
-                .map(|t| json!(t))
-                .unwrap_or_else(|| {
-                    if has_tool_calls {
-                        Value::Null
-                    } else {
-                        json!("")
-                    }
-                }),
-        );
-        if has_tool_calls {
-            message.insert("tool_calls".into(), Value::Array(tool_calls));
-        }
-
-        let status = json_response.get("status").and_then(Value::as_str);
-        let response_done = status == Some("completed") || status == Some("done");
-        let finish_reason = if has_tool_calls {
-            "tool_calls".to_string()
-        } else if response_done {
-            "stop".to_string()
-        } else {
-            status.unwrap_or("stop").to_string()
-        };
-
-        let mut usage_obj = Map::new();
-        usage_obj.insert("prompt_tokens".into(), json!(in_tokens));
-        usage_obj.insert("completion_tokens".into(), json!(out_tokens));
-        usage_obj.insert("total_tokens".into(), json!(in_tokens + out_tokens));
-        if let Some(cache_details) = cache_details
-            && let Some(details) = cache_details.get("prompt_tokens_details")
-        {
-            usage_obj.insert("prompt_tokens_details".into(), details.clone());
-        }
-
-        final_resp.insert(
-            "id".into(),
-            json_response
-                .get("id")
-                .filter(|v| js_truthy(v))
-                .cloned()
-                .unwrap_or(json!(format!("chatcmpl-{now}"))),
-        );
-        final_resp.insert("object".into(), json!("chat.completion"));
-        final_resp.insert(
-            "created".into(),
-            json_response
-                .get("created_at")
-                .filter(|v| js_truthy(v))
-                .map(|v| json!(js_number(Some(v))))
-                .unwrap_or(json!(now / 1000)),
-        );
-        final_resp.insert(
-            "model".into(),
-            json_response
-                .get("model")
-                .filter(|v| js_truthy(v))
-                .map(|v| Value::String(js_string(v)))
-                .unwrap_or_else(|| Value::String(ctx.model.to_string())),
-        );
-        final_resp.insert(
-            "choices".into(),
-            Value::Array(vec![json!({
-                "index": 0,
-                "message": Value::Object(message),
-                "finish_reason": finish_reason,
-            })]),
-        );
-        final_resp.insert("usage".into(), Value::Object(usage_obj));
+    );
+    if has_tool_calls {
+        message.insert("tool_calls".into(), Value::Array(tool_calls));
     }
+
+    let status = json_response.get("status").and_then(Value::as_str);
+    let response_done = status == Some("completed") || status == Some("done");
+    let finish_reason = if has_tool_calls {
+        "tool_calls".to_string()
+    } else if response_done {
+        "stop".to_string()
+    } else {
+        status.unwrap_or("stop").to_string()
+    };
+
+    let mut usage_obj = Map::new();
+    usage_obj.insert("prompt_tokens".into(), json!(in_tokens));
+    usage_obj.insert("completion_tokens".into(), json!(out_tokens));
+    usage_obj.insert("total_tokens".into(), json!(in_tokens + out_tokens));
+    if let Some(cache_details) = cache_details
+        && let Some(details) = cache_details.get("prompt_tokens_details")
+    {
+        usage_obj.insert("prompt_tokens_details".into(), details.clone());
+    }
+
+    final_resp.insert(
+        "id".into(),
+        json_response
+            .get("id")
+            .filter(|v| js_truthy(v))
+            .cloned()
+            .unwrap_or(json!(format!("chatcmpl-{now}"))),
+    );
+    final_resp.insert("object".into(), json!("chat.completion"));
+    final_resp.insert(
+        "created".into(),
+        json_response
+            .get("created_at")
+            .filter(|v| js_truthy(v))
+            .map(|v| json!(js_number(Some(v))))
+            .unwrap_or(json!(now / 1000)),
+    );
+    final_resp.insert(
+        "model".into(),
+        json_response
+            .get("model")
+            .filter(|v| js_truthy(v))
+            .map(|v| Value::String(js_string(v)))
+            .unwrap_or_else(|| Value::String(ctx.model.to_string())),
+    );
+    final_resp.insert(
+        "choices".into(),
+        Value::Array(vec![json!({
+            "index": 0,
+            "message": Value::Object(message),
+            "finish_reason": finish_reason,
+        })]),
+    );
+    final_resp.insert("usage".into(), Value::Object(usage_obj));
 
     let mut body = Value::Object(final_resp);
     if ctx.source_format == formats::CLAUDE {

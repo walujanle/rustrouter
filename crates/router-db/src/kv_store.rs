@@ -7,11 +7,10 @@ use rusqlite::{Connection, OptionalExtension};
 
 use crate::error::DbResult;
 
-/// The five scopes the application actually uses. `mitmAlias` rows are read
-/// back but never written.
+/// The four scopes the application actually uses. `mitmAlias` rows are read
+/// back but never written, so they are addressed by literal in the export path.
 pub const SCOPE_MODEL_ALIASES: &str = "modelAliases";
 pub const SCOPE_CUSTOM_MODELS: &str = "customModels";
-pub const SCOPE_MITM_ALIAS: &str = "mitmAlias";
 pub const SCOPE_PRICING: &str = "pricing";
 pub const SCOPE_DISABLED_MODELS: &str = "disabledModels";
 

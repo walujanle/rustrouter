@@ -18,7 +18,7 @@ pub fn inject_system_prompt(body: &mut Value, format: &str, prompt: &str) {
         return;
     }
 
-    if is_kiro_body(body) || format == f::KIRO {
+    if is_kiro_body(body) {
         inject_kiro_system(body, prompt);
         return;
     }
@@ -26,7 +26,7 @@ pub fn inject_system_prompt(body: &mut Value, format: &str, prompt: &str) {
         inject_claude_system(body, prompt);
         return;
     }
-    if matches!(format, f::GEMINI | f::GEMINI_CLI | f::VERTEX) {
+    if format == f::GEMINI {
         inject_gemini_system(body, prompt);
         return;
     }
@@ -487,7 +487,7 @@ mod tests {
             "history": [{"userInputMessage": {"content": "hello"}}],
             "currentMessage": {"userInputMessage": {"content": "again"}}
         }});
-        inject_system_prompt(&mut body, f::KIRO, P);
+        inject_system_prompt(&mut body, f::OPENAI, P);
         assert_eq!(
             body["conversationState"]["history"][0]["userInputMessage"]["content"],
             "hello\n\nbe terse"

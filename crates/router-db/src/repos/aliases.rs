@@ -1,7 +1,7 @@
 //! Aliases, custom models and disabled models over the `kv` table.
 //!
-//! There are no `mitmAlias` accessors, but the constant stays in `kv_store` so
-//! rows written by another install remain readable.
+//! There are no `mitmAlias` accessors here; the export/import path addresses
+//! that scope by literal so rows written by another install remain readable.
 
 use std::collections::HashSet;
 

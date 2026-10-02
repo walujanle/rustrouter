@@ -12,14 +12,6 @@ use crate::json_col::{parse_json, stringify_json};
 
 pub const DEFAULT_MITM_ROUTER_BASE: &str = "http://localhost:20128";
 
-/// `HEADROOM_URL`, defaulting to `http://localhost:8787`.
-pub fn default_headroom_url() -> String {
-    std::env::var("HEADROOM_URL")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "http://localhost:8787".to_string())
-}
-
 /// The default settings, in declaration order. Order is the key order of the
 /// stored JSON, so it is part of the parity contract.
 pub fn default_settings() -> Map<String, Value> {
@@ -72,10 +64,6 @@ pub fn default_settings() -> Map<String, Value> {
     m.insert("mitmRouterBaseUrl".into(), json!(DEFAULT_MITM_ROUTER_BASE));
     m.insert("dnsToolEnabled".into(), json!({}));
     m.insert("rtkEnabled".into(), json!(true));
-    m.insert("headroomEnabled".into(), json!(false));
-    m.insert("headroomUrl".into(), json!(default_headroom_url()));
-    m.insert("headroomCompressUserMessages".into(), json!(false));
-    m.insert("headroomTimeoutMs".into(), json!(3000));
     m.insert("cavemanEnabled".into(), json!(false));
     m.insert("cavemanLevel".into(), json!("full"));
     m.insert("ponytailEnabled".into(), json!(false));
@@ -200,7 +188,6 @@ mod tests {
         assert_eq!(keys[keys.len() - 3], "pxpipeTimeoutMs");
         assert_eq!(keys[keys.len() - 2], "quotaAutoTrackerEnabled");
         assert_eq!(keys[keys.len() - 1], "autoUpdateCheck");
-        assert!(keys.contains(&"headroomEnabled"));
         assert!(keys.contains(&"pxpipeEnabled"));
         assert!(keys.contains(&"samlCert"));
     }

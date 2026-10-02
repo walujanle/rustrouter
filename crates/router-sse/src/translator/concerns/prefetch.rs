@@ -1,6 +1,6 @@
 //! Pre-fetch remote image URLs into base64 before translation.
 //!
-//! Some targets (Gemini, Kiro, CommandCode) cannot fetch a remote URL
+//! Some targets (CommandCode) cannot fetch a remote URL
 //! themselves and require inline base64. This runs on the *source*-format body
 //! and rewrites each remote image in place, before the translators see it.
 //!
@@ -14,14 +14,7 @@ use crate::translator::formats;
 
 /// Targets that require inline base64 images.
 fn target_needs_base64(target_format: &str) -> bool {
-    matches!(
-        target_format,
-        formats::GEMINI
-            | formats::GEMINI_CLI
-            | formats::VERTEX
-            | formats::KIRO
-            | formats::COMMANDCODE
-    )
+    target_format == formats::COMMANDCODE
 }
 
 /// Where a remote image URL lives, and how to rewrite it.
@@ -142,9 +135,7 @@ fn collect_image_refs(body: &Value, source_format: &str) -> Vec<(ImageRef, Strin
         };
 
     match source_format {
-        formats::OPENAI | formats::KIRO | formats::CURSOR | formats::COMMANDCODE => {
-            push_openai(body.get("messages"), &mut refs)
-        }
+        formats::OPENAI | formats::COMMANDCODE => push_openai(body.get("messages"), &mut refs),
         formats::CLAUDE => {
             if let Some(messages) = body.get("messages").and_then(Value::as_array) {
                 for (mi, msg) in messages.iter().enumerate() {
@@ -176,9 +167,7 @@ fn collect_image_refs(body: &Value, source_format: &str) -> Vec<(ImageRef, Strin
                 }
             }
         }
-        formats::GEMINI | formats::GEMINI_CLI | formats::VERTEX => {
-            push_gemini(body.get("contents"), &[], &mut refs)
-        }
+        formats::GEMINI => push_gemini(body.get("contents"), &[], &mut refs),
         _ => push_openai(body.get("messages"), &mut refs),
     }
     refs
@@ -252,7 +241,7 @@ mod tests {
         assert_eq!(refs.len(), 1);
         // The target gate is what stops the fetch.
         assert!(!target_needs_base64(formats::OPENAI));
-        assert!(target_needs_base64(formats::GEMINI));
+        assert!(target_needs_base64(formats::COMMANDCODE));
     }
 
     #[test]

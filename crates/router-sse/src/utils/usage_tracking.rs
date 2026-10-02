@@ -88,7 +88,7 @@ pub fn filter_usage_for_format(usage: &Value, target_format: &str) -> Value {
 
     let fields: &[&str] = match target_format {
         formats::CLAUDE => &CLAUDE_FIELDS,
-        formats::GEMINI | formats::GEMINI_CLI => &GEMINI_FIELDS,
+        formats::GEMINI => &GEMINI_FIELDS,
         formats::OPENAI_RESPONSES | formats::OPENAI_RESPONSE => &RESPONSES_FIELDS,
         _ => &OPENAI_FIELDS,
     };
@@ -396,15 +396,6 @@ pub fn format_usage(input_tokens: i64, output_tokens: i64, target_format: &str) 
     }))
 }
 
-/// `estimateUsage(body, contentLength, targetFormat)`.
-pub fn estimate_usage(body: &Value, content_length: i64, target_format: &str) -> Value {
-    format_usage(
-        estimate_input_tokens(body),
-        estimate_output_tokens(content_length),
-        target_format,
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -449,12 +440,9 @@ mod tests {
         assert_eq!(claude["input_tokens"], json!(6));
         assert!(claude.get("prompt_tokens").is_none());
 
-        // The Gemini shape also serves gemini-cli.
-        for format in [formats::GEMINI, formats::GEMINI_CLI] {
-            let filtered = filter_usage_for_format(&usage, format);
-            assert_eq!(filtered["promptTokenCount"], json!(10), "{format}");
-            assert!(filtered.get("prompt_tokens").is_none(), "{format}");
-        }
+        let filtered = filter_usage_for_format(&usage, formats::GEMINI);
+        assert_eq!(filtered["promptTokenCount"], json!(10));
+        assert!(filtered.get("prompt_tokens").is_none());
 
         // Responses keeps its nested details.
         let responses = filter_usage_for_format(
@@ -728,9 +716,13 @@ mod tests {
     }
 
     #[test]
-    fn estimate_usage_composes_the_two_estimates() {
+    fn the_two_estimates_compose_into_a_usage_body() {
         let body = json!({"messages": [{"role": "user", "content": "hello"}]});
-        let out = estimate_usage(&body, 40, formats::OPENAI);
+        let out = format_usage(
+            estimate_input_tokens(&body),
+            estimate_output_tokens(40),
+            formats::OPENAI,
+        );
         assert_eq!(out["completion_tokens"], json!(10));
         assert_eq!(out["estimated"], json!(true));
         assert!(out["prompt_tokens"].as_i64().unwrap() > BUFFER_TOKENS);

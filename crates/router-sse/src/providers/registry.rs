@@ -352,8 +352,6 @@ mod tests {
     #[test]
     fn provider_id_to_alias_uses_the_oauth_alias() {
         let r = registry();
-        // Entries whose alias equals their id keep the id.
-        assert_eq!(r.alias_for("vertex"), "vertex");
         // An entry with a distinct alias resolves through it.
         let entry = r
             .entries()

@@ -1,6 +1,6 @@
 //! Provider usage → OpenAI usage.
 //!
-//! Each provider folds its raw counters differently (claude and gemini fold
+//! Each provider folds its raw counters differently (claude folds
 //! cache and reasoning into the totals, the others do not), so the extractors
 //! stay separate rather than sharing a "sum the obvious fields" helper that
 //! would be wrong for half of them.
@@ -76,49 +76,6 @@ pub fn extract_usage(raw: &Value, kind: &str) -> Option<UsageArgs> {
                 ..Default::default()
             }
         }
-        "gemini" => {
-            let cached = n(g("cachedContentTokenCount"));
-            let prompt = n(g("promptTokenCount"));
-            let thoughts = n(g("thoughtsTokenCount"));
-            let total = n(g("totalTokenCount"));
-            let mut candidates = n(g("candidatesTokenCount"));
-            // Derive candidates from the total when upstream omits it.
-            if candidates == 0 && total > 0 {
-                candidates = (total - prompt - thoughts).max(0);
-            }
-            UsageArgs {
-                prompt_tokens: prompt,
-                completion_tokens: candidates + thoughts,
-                total_tokens: total,
-                cached_tokens: cached,
-                reasoning_tokens: thoughts,
-                ..Default::default()
-            }
-        }
-        "kiro" => {
-            let input = n(g("inputTokens"));
-            let output = n(g("outputTokens"));
-            // Amazon Q exposes no cache fields today; the three spellings are
-            // checked so a future event shape keeps cost tracking working.
-            let cached = {
-                let a = n(g("cache_read_input_tokens"));
-                if a != 0 {
-                    a
-                } else {
-                    let b = n(g("cachedTokens"));
-                    if b != 0 { b } else { n(g("cached_tokens")) }
-                }
-            };
-            let cache_creation = n(g("cache_creation_input_tokens"));
-            UsageArgs {
-                prompt_tokens: input,
-                completion_tokens: output,
-                total_tokens: input + output,
-                cached_tokens: cached,
-                cache_creation_tokens: cache_creation,
-                ..Default::default()
-            }
-        }
         "commandcode" => {
             let input = n(g("inputTokens"));
             let output = n(g("outputTokens"));
@@ -164,51 +121,6 @@ mod tests {
             usage["prompt_tokens_details"]["cache_creation_tokens"],
             json!(5)
         );
-    }
-
-    #[test]
-    fn gemini_derives_candidates_from_the_total_when_absent() {
-        let raw = json!({
-            "promptTokenCount": 100,
-            "thoughtsTokenCount": 30,
-            "totalTokenCount": 200,
-            "cachedContentTokenCount": 10,
-        });
-        let usage = to_openai_usage(Some(&raw), "gemini").unwrap();
-        // candidates = 200 - 100 - 30 = 70; completion = 70 + 30.
-        assert_eq!(usage["completion_tokens"], json!(100));
-        assert_eq!(usage["total_tokens"], json!(200));
-        assert_eq!(
-            usage["completion_tokens_details"]["reasoning_tokens"],
-            json!(30)
-        );
-    }
-
-    #[test]
-    fn gemini_clamps_a_negative_candidate_derivation() {
-        let raw =
-            json!({"promptTokenCount": 100, "thoughtsTokenCount": 300, "totalTokenCount": 200});
-        let usage = to_openai_usage(Some(&raw), "gemini").unwrap();
-        assert_eq!(
-            usage["completion_tokens"],
-            json!(300),
-            "candidates clamp to 0, thoughts stay"
-        );
-    }
-
-    #[test]
-    fn kiro_reads_each_cache_spelling_and_keeps_zero_details_off() {
-        let raw = json!({"inputTokens": 10, "outputTokens": 5});
-        let usage = to_openai_usage(Some(&raw), "kiro").unwrap();
-        assert_eq!(usage["total_tokens"], json!(15));
-        assert!(
-            usage.get("prompt_tokens_details").is_none(),
-            "no cache → no detail key"
-        );
-
-        let raw = json!({"inputTokens": 10, "outputTokens": 5, "cachedTokens": 4});
-        let usage = to_openai_usage(Some(&raw), "kiro").unwrap();
-        assert_eq!(usage["prompt_tokens_details"]["cached_tokens"], json!(4));
     }
 
     #[test]

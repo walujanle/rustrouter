@@ -16,35 +16,15 @@ pub mod responses_api;
 
 /// The wire vocabulary: the shared concerns branch on these strings.
 ///
-/// `gemini`, `gemini-cli` and `vertex` are retained for the Gemini-family
-/// detection and usage-tracking branches; no provider in the registry serves
-/// them.
+/// `gemini` is retained for the Gemini-family detection and usage-tracking
+/// branches; no provider in the registry serves it.
 pub const OPENAI: &str = "openai";
 pub const OPENAI_RESPONSES: &str = "openai-responses";
 pub const OPENAI_RESPONSE: &str = "openai-response";
 pub const CLAUDE: &str = "claude";
 pub const GEMINI: &str = "gemini";
-pub const GEMINI_CLI: &str = "gemini-cli";
-pub const VERTEX: &str = "vertex";
 pub const CODEX: &str = "codex";
-pub const KIRO: &str = "kiro";
-pub const CURSOR: &str = "cursor";
 pub const COMMANDCODE: &str = "commandcode";
-
-/// Every format constant, for exhaustive checks and tests.
-pub const ALL: [&str; 11] = [
-    OPENAI,
-    OPENAI_RESPONSES,
-    OPENAI_RESPONSE,
-    CLAUDE,
-    GEMINI,
-    GEMINI_CLI,
-    VERTEX,
-    CODEX,
-    KIRO,
-    CURSOR,
-    COMMANDCODE,
-];
 
 /// `detectFormatByEndpoint(pathname, body)`: `None` means "fall back to
 /// body-based detection".

@@ -194,7 +194,7 @@ async fn existing_names(state: &AppState) -> Result<Vec<String>, ()> {
 }
 
 fn invalid_source() -> Response {
-    ApiError::bad_request("source must be 'cursor' or 'claude'").into_response()
+    ApiError::bad_request("source must be 'claude'").into_response()
 }
 
 /// `GET /api/combos/presets?source=`.

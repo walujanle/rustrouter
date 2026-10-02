@@ -33,14 +33,6 @@ pub fn stringify_json(value: &Value) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "null".to_string())
 }
 
-/// `stringify_json` where the value may be absent; absence writes `null`.
-pub fn stringify_json_or_null(value: Option<&Value>) -> String {
-    match value {
-        Some(v) => stringify_json(v),
-        None => "null".to_string(),
-    }
-}
-
 /// Truthiness for a JSON value: `null`, `false`, `0`, `""`, and `NaN` are
 /// falsy; everything else — including `[]` and `{}` — is truthy.
 pub fn is_falsy(v: &Value) -> bool {
@@ -101,7 +93,6 @@ mod tests {
 
     #[test]
     fn null_is_written_as_null() {
-        assert_eq!(stringify_json_or_null(None), "null");
         assert_eq!(stringify_json(&Value::Null), "null");
     }
 

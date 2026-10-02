@@ -1,7 +1,7 @@
 //! `finish_reason` / `stop_reason` mapping.
 
 use crate::translator::formats;
-use crate::translator::schema::{claude_stop, gemini_finish, openai_finish};
+use crate::translator::schema::{claude_stop, openai_finish};
 
 /// Map a provider finish reason to its OpenAI spelling. `None` and the empty
 /// string both fall to `"stop"`.
@@ -26,20 +26,6 @@ pub fn to_openai_finish(reason: Option<&str>, format: &str) -> String {
             Some("error") => openai_finish::STOP.into(),
             Some(other) => other.to_string(),
             None => openai_finish::STOP.into(),
-        },
-        formats::GEMINI => match reason.map(str::to_uppercase).as_deref() {
-            Some(gemini_finish::STOP) => openai_finish::STOP.into(),
-            Some(gemini_finish::MAX_TOKENS) => openai_finish::LENGTH.into(),
-            Some(gemini_finish::SAFETY)
-            | Some(gemini_finish::RECITATION)
-            | Some(gemini_finish::BLOCKLIST)
-            | Some(gemini_finish::PROHIBITED_CONTENT) => openai_finish::CONTENT_FILTER.into(),
-            _ => openai_finish::STOP.into(),
-        },
-        formats::KIRO => match reason {
-            Some("tool_calls") | Some("tool_use") => openai_finish::TOOL_CALLS.into(),
-            Some("length") | Some("max_tokens") => openai_finish::LENGTH.into(),
-            _ => openai_finish::STOP.into(),
         },
         _ => reason.unwrap_or(openai_finish::STOP).to_string(),
     }
@@ -89,24 +75,7 @@ mod tests {
     }
 
     #[test]
-    fn gemini_reasons_are_upper_cased_before_matching() {
-        assert_eq!(to_openai_finish(Some("STOP"), formats::GEMINI), "stop");
-        assert_eq!(
-            to_openai_finish(Some("max_tokens"), formats::GEMINI),
-            "length"
-        );
-        assert_eq!(
-            to_openai_finish(Some("SAFETY"), formats::GEMINI),
-            "content_filter"
-        );
-        assert_eq!(
-            to_openai_finish(Some("PROHIBITED_CONTENT"), formats::GEMINI),
-            "content_filter"
-        );
-    }
-
-    #[test]
-    fn commandcode_and_kiro_carry_their_own_spellings() {
+    fn commandcode_carries_its_own_spellings() {
         assert_eq!(
             to_openai_finish(Some("tool-calls"), formats::COMMANDCODE),
             "tool_calls"
@@ -119,10 +88,6 @@ mod tests {
         assert_eq!(
             to_openai_finish(Some("weird"), formats::COMMANDCODE),
             "weird"
-        );
-        assert_eq!(
-            to_openai_finish(Some("max_tokens"), formats::KIRO),
-            "length"
         );
     }
 

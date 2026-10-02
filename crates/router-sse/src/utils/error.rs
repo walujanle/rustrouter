@@ -65,11 +65,6 @@ pub fn build_error_body(status_code: u16, message: &str) -> Value {
     })
 }
 
-/// The JSON body and its status.
-pub fn error_response(status_code: u16, message: &str) -> (u16, Value) {
-    (status_code, build_error_body(status_code, message))
-}
-
 /// A status, message and optional reset time parsed out of an upstream error.
 #[derive(Debug, Clone, PartialEq)]
 pub struct UpstreamError {
@@ -151,9 +146,7 @@ pub fn parse_upstream_error(
 }
 
 /// The `{ success, status, error, resetsAtMs }` result the chat core builds
-/// from a failed request. The `response` half is `error_response`, kept
-/// separate so the chat core can hand the body to axum without this crate
-/// knowing about axum.
+/// from a failed request.
 #[derive(Debug, Clone)]
 pub struct ErrorResult {
     pub status: u16,

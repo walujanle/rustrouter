@@ -26,7 +26,6 @@ use crate::translator::concerns::tool_call::{ensure_tool_call_ids, fix_missing_t
 use crate::translator::formats::claude::{PrepareClaudeArgs, prepare_claude_request};
 use crate::translator::formats::openai::{OpenAiFilterOptions, filter_to_openai_format};
 use crate::translator::schema::{openai_block, role};
-use crate::utils::claude_cloaking::{cloak_claude_tools, decloak_stream_chunk};
 use crate::utils::fingerprint::restore_tool_names;
 
 pub mod concerns;
@@ -207,8 +206,8 @@ pub struct TranslatedRequest {
 /// credentials, provider, stripList, connectionId)`.
 ///
 /// `credentials` is taken mutably: the session id captured from the original
-/// body is stashed on it for the Gemini/Kiro envelope builders that run later
-/// in this same call.
+/// body is stashed on it for the envelope builders that run later in this
+/// same call.
 pub fn translate_request(
     args: &TranslateRequestArgs<'_>,
     mut body: Value,
@@ -314,20 +313,6 @@ pub fn translate_request(
         );
     }
 
-    // Anti-ban cloaking: only providers flagged `cloakToolsOnOAuth`, and only
-    // with an OAuth token.
-    if quirk_truthy(args.provider, "cloakToolsOnOAuth")
-        && credentials
-            .bearer()
-            .is_some_and(|k| k.contains("sk-ant-oat"))
-    {
-        let cloaked = cloak_claude_tools(&body);
-        body = cloaked.body;
-        if let Some(map) = cloaked.tool_name_map {
-            meta.tool_name_map = Some(map);
-        }
-    }
-
     TranslatedRequest {
         body,
         tool_name_map: meta.tool_name_map,
@@ -354,12 +339,8 @@ pub fn translate_response(
     // `state.tool_name_map` cannot span the calls below.
     let map = state.tool_name_map.clone();
 
-    // Same format still needs decloaking: the request side suffixes client
-    // tools even when no format conversion happens, so a streamed tool_use
-    // would otherwise reach the client with an unknown name.
     if source_format == target_format {
         let mut c = chunk.clone();
-        decloak_stream_chunk(&mut c, map.as_ref());
         restore_tool_names(&mut c, map.as_ref());
         return TranslatedResponse {
             chunks: vec![c],
@@ -860,11 +841,7 @@ mod tests {
     #[test]
     fn unregistered_provider_pairs_return_none() {
         let r = registry();
-        assert!(r.request_fn(formats::OPENAI, formats::KIRO).is_none());
         assert!(r.request_fn(formats::OPENAI, formats::GEMINI).is_none());
-        assert!(r.response_fn(formats::KIRO, formats::OPENAI).is_none());
-        assert!(r.response_fn(formats::CURSOR, formats::OPENAI).is_none());
-        assert!(r.response_fn(formats::VERTEX, formats::OPENAI).is_none());
     }
 
     #[test]

@@ -9,12 +9,6 @@ pub mod role {
     pub const DEVELOPER: &str = "developer";
 }
 
-/// `GEMINI_ROLE`.
-pub mod gemini_role {
-    pub const USER: &str = "user";
-    pub const MODEL: &str = "model";
-}
-
 /// `OPENAI_BLOCK`.
 pub mod openai_block {
     pub const TEXT: &str = "text";
@@ -89,16 +83,6 @@ pub mod claude_stop {
     pub const TOOL_USE: &str = "tool_use";
     pub const STOP_SEQUENCE: &str = "stop_sequence";
     pub const REFUSAL: &str = "refusal";
-}
-
-/// `GEMINI_FINISH`.
-pub mod gemini_finish {
-    pub const STOP: &str = "STOP";
-    pub const MAX_TOKENS: &str = "MAX_TOKENS";
-    pub const SAFETY: &str = "SAFETY";
-    pub const RECITATION: &str = "RECITATION";
-    pub const BLOCKLIST: &str = "BLOCKLIST";
-    pub const PROHIBITED_CONTENT: &str = "PROHIBITED_CONTENT";
 }
 
 /// `MODEL_FALLBACK`.

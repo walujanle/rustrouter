@@ -275,9 +275,8 @@ fn array_len(value: Option<&Value>) -> usize {
 ///
 /// The orchestrator: resolve the formats, translate the request, run the
 /// executor with a token-refresh retry, then hand the upstream response to the
-/// forced-SSE, non-streaming or streaming handler. `headroom` and `pxpipe` are
-/// not part of this build, so the token-saver chain is RTK, caveman and
-/// ponytail only.
+/// forced-SSE, non-streaming or streaming handler. `pxpipe` is not part of this
+/// build, so the token-saver chain is RTK, caveman and ponytail only.
 pub async fn handle_chat_core(request: ChatCoreRequest<'_>) -> ChatResult {
     let ChatCoreRequest {
         mut body,
@@ -390,9 +389,8 @@ pub async fn handle_chat_core(request: ChatCoreRequest<'_>) -> ChatResult {
         .as_deref()
         != Some("off");
 
-    // Cursor's pre-translate RTK pass is gone with the provider.
     let client_requested_streaming = body.get("stream").and_then(Value::as_bool) == Some(true)
-        || matches!(source_format, formats::GEMINI | formats::GEMINI_CLI);
+        || source_format == formats::GEMINI;
     let provider_requires_streaming = registry()
         .transport(provider)
         .and_then(|t| t.force_stream)

@@ -52,14 +52,6 @@ pub enum StreamMode {
     Passthrough,
 }
 
-/// `reqLogger?.appendProviderChunk / appendConvertedChunk / appendOpenAIChunk`.
-/// Every method is optional; an implementor no-ops the ones it does not want.
-pub trait StreamLog: Send + Sync {
-    fn append_provider_chunk(&self, _text: &str) {}
-    fn append_converted_chunk(&self, _text: &str) {}
-    fn append_openai_chunk(&self, _text: &str) {}
-}
-
 /// Usage-DB callbacks: pending-request tracking and request-log appends.
 /// The crate is DB-free, so the server layer persists them.
 pub trait StreamHooks: Send + Sync {
@@ -101,7 +93,6 @@ pub struct SseStreamOptions {
     pub credentials: Option<Credentials>,
     /// `credentials?._clientSessionId`, when the caller already resolved it.
     pub session_id: Option<String>,
-    pub log: Option<Arc<dyn StreamLog>>,
     pub hooks: Option<Arc<dyn StreamHooks>>,
     pub on_stream_complete: Option<StreamCompleteFn>,
 }
@@ -121,7 +112,6 @@ impl Default for SseStreamOptions {
             api_key: None,
             credentials: None,
             session_id: None,
-            log: None,
             hooks: None,
             on_stream_complete: None,
         }
@@ -219,9 +209,6 @@ impl SseStream {
         }
 
         let text = self.decode(chunk);
-        if let Some(log) = &self.opts.log {
-            log.append_provider_chunk(&text);
-        }
         self.buffer.push_str(&text);
 
         let mut lines: Vec<String> = self.buffer.split('\n').map(str::to_string).collect();
@@ -277,12 +264,7 @@ impl SseStream {
                 self.emit_raw(&output, &mut out);
             }
 
-            // Gemini-family clients reject the OpenAI sentinel with a 400.
-            let is_gemini_family = matches!(
-                self.opts.provider.as_deref(),
-                Some("gemini") | Some("vertex")
-            );
-            if !self.stream_done_sent && !is_gemini_family {
+            if !self.stream_done_sent {
                 self.emit_raw("data: [DONE]\n\n", &mut out);
             }
 
@@ -699,14 +681,6 @@ impl SseStream {
             return Vec::new();
         };
         let translated = translate_response(target, &self.opts.source_format, chunk, state);
-
-        if let Some(items) = &translated.openai_intermediate
-            && let Some(log) = &self.opts.log
-        {
-            for item in items {
-                log.append_openai_chunk(&format_sse(item, Some(formats::OPENAI)));
-            }
-        }
         translated.chunks
     }
 
@@ -719,9 +693,6 @@ impl SseStream {
     }
 
     fn emit_raw(&self, output: &str, out: &mut Vec<Bytes>) {
-        if let Some(log) = &self.opts.log {
-            log.append_converted_chunk(output);
-        }
         out.push(Bytes::from(output.to_string()));
     }
 
@@ -972,14 +943,9 @@ mod tests {
     }
 
     #[test]
-    fn passthrough_flush_terminates_with_done_unless_gemini_family() {
+    fn passthrough_flush_terminates_with_done() {
         let mut stream = passthrough();
         assert!(text_of(stream.flush()).ends_with("data: [DONE]\n\n"));
-
-        let mut opts = SseStreamOptions::new(StreamMode::Passthrough, formats::OPENAI);
-        opts.provider = Some("gemini".to_string());
-        let mut gemini = SseStream::new(opts);
-        assert!(text_of(gemini.flush()).is_empty());
     }
 
     #[test]
