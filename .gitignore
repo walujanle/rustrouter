@@ -23,6 +23,9 @@ npm/bin/rustrouter
 *.sqlite-wal
 *.sqlite-shm
 
+# Session handoff notes
+.ai/
+
 # Editor / OS
 .DS_Store
 Thumbs.db
