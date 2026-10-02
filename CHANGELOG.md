@@ -5,6 +5,19 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-10-02
+
+### Fixed
+
+- The release workflow published the main npm package with `npm publish npm`.
+  `npm` is a registry package name — the CLI itself — so npm packed and tried to
+  publish `npm@12.2.0` instead of the local `npm/` tree. The 0.1.3 run published
+  the five platform packages and the GitHub Release, then failed here, so
+  `rustrouter@0.1.3` was never published. The argument is now `./npm`.
+- The GitHub Release step is re-runnable: it skips when the release for the tag
+  already exists, so a re-run after a failed publish leg no longer aborts on
+  `gh release create`.
+
 ## [0.1.3] - 2026-10-02
 
 ### Fixed
@@ -135,7 +148,9 @@ All notable changes to this project are documented here. Format follows
 
 Initial release.
 
-[Unreleased]: https://github.com/walujanle/rustrouter/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/walujanle/rustrouter/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/walujanle/rustrouter/releases/tag/v0.1.4
+[0.1.3]: https://github.com/walujanle/rustrouter/releases/tag/v0.1.3
 [0.1.2]: https://github.com/walujanle/rustrouter/releases/tag/v0.1.2
 [0.1.1]: https://github.com/walujanle/rustrouter/releases/tag/v0.1.1
 [0.1.0]: https://github.com/walujanle/rustrouter/releases/tag/v0.1.0

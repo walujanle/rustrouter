@@ -5,7 +5,7 @@ entry points are, and how the pieces connect. It is a map, not a replacement for
 docs — `docs/PLAN.md` is still the architecture record, and `AGENTS.md` holds the editing
 rules. Use this when you know roughly what you want to change and need the exact file.
 
-Version indexed: `PROJECT_VERSION` = 0.1.2 (workspace 0.1.2, Rust edition 2024, MSRV 1.88).
+Version indexed: `PROJECT_VERSION` = 0.1.4 (workspace 0.1.4, Rust edition 2024, MSRV 1.88).
 
 ## The two hard constraints
 
@@ -502,7 +502,7 @@ UI primitives (`src/components/ui/`): `UiButton`, `UiCard`, `UiInput`, `UiSelect
 | `scripts/set-version.mjs` | Propagates `PROJECT_VERSION` into every manifest (Cargo.toml, Cargo.lock, web package+lock, npm main + platform packages); `--check` verifies without writing. |
 | `scripts/extract-changelog.mjs` | Prints the CHANGELOG section for a version (falls back to Unreleased) for the GitHub Release body. |
 | `rust-toolchain.toml` | Pins the verified toolchain (1.97.1) with rustfmt + clippy; MSRV floor stays 1.88. |
-| `PROJECT_VERSION` | Single version source (0.1.2). |
+| `PROJECT_VERSION` | Single version source (0.1.4). |
 | `Cargo.toml` | Workspace root: four members, shared dependency versions, release profile (thin LTO, codegen-units=1, stripped). |
 | `crates/*/Cargo.toml` | Per-crate manifests. Feature flags live here, versions in the workspace. |
 

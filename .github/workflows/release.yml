@@ -199,10 +199,17 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "v${{ needs.verify.outputs.version }}" dist/* \
-            --title "v${{ needs.verify.outputs.version }}" \
-            --notes-file notes.md \
-            --verify-tag
+          # A re-run of a tag whose publish leg failed lands here with the
+          # release already created. Creating it again is an error, so treat an
+          # existing release as done and let the publish job proceed.
+          if gh release view "v${{ needs.verify.outputs.version }}" >/dev/null 2>&1; then
+            echo "release v${{ needs.verify.outputs.version }} already exists, skipping"
+          else
+            gh release create "v${{ needs.verify.outputs.version }}" dist/* \
+              --title "v${{ needs.verify.outputs.version }}" \
+              --notes-file notes.md \
+              --verify-tag
+          fi
 
   # Publishing uses npm Trusted Publishing (OIDC): no stored token. Each package
   # needs its trusted publisher configured on npmjs.com once — see
@@ -266,5 +273,8 @@ jobs:
           if npm view "rustrouter@${{ needs.verify.outputs.version }}" version >/dev/null 2>&1; then
             echo "rustrouter@${{ needs.verify.outputs.version }} already published, skipping"
           else
-            npm publish npm --provenance --access public
+            # `npm` on its own is a registry package name (the CLI itself), so
+            # `npm publish npm` packs npm@<version>, not this tree. The path
+            # needs an explicit `./` to be read as a directory.
+            npm publish ./npm --provenance --access public
           fi
