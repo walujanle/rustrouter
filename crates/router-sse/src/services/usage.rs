@@ -19,6 +19,7 @@ mod grok_cli;
 
 use std::time::Duration;
 
+use chrono::TimeZone;
 use serde_json::{Map, Value, json};
 
 use crate::executors::http::{ProxyOptions, prepare_send};
@@ -147,14 +148,103 @@ pub(crate) fn parse_reset_time(value: Option<&Value>) -> Option<String> {
             n as i64
         }));
     }
-    // RFC-3339 first, then the date-only form.
+    // RFC-3339 first, then the shapes JS `new Date()` accepts but RFC-3339 does
+    // not: a space-separated datetime, a T-form without an offset, a colonless
+    // `+HHMM` offset, and a `UTC+8`/`GMT+8` zone token. CodeBuddy's billing
+    // endpoint emits the space-separated form, which strict RFC-3339 rejects.
     if let Some(ms) = crate::executors::oauth::parse_time_ms(Some(value)) {
         return Some(to_iso(ms));
+    }
+    let normalized = normalize_reset_datetime(s);
+    if let Some(ms) =
+        crate::executors::oauth::parse_time_ms(Some(&Value::String(normalized.clone())))
+    {
+        return Some(to_iso(ms));
+    }
+    // A naive datetime is local time, exactly as JS `new Date()` reads it.
+    for fmt in ["%Y-%m-%dT%H:%M:%S%.f", "%Y-%m-%dT%H:%M"] {
+        if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(&normalized, fmt)
+            && let Some(ms) = chrono::Local
+                .from_local_datetime(&dt)
+                .earliest()
+                .or_else(|| chrono::Local.from_local_datetime(&dt).latest())
+                .map(|d| d.timestamp_millis())
+        {
+            return Some(to_iso(ms));
+        }
     }
     let date = chrono::NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok()?;
     Some(to_iso(
         date.and_hms_opt(0, 0, 0)?.and_utc().timestamp_millis(),
     ))
+}
+
+/// Rewrite the date shapes JS `new Date()` accepts but RFC-3339 does not into an
+/// RFC-3339-ish form: `2026-11-01 00:00:00` → `2026-11-01T00:00:00`,
+/// `... UTC+8` → `...+08:00`, `...+0800` → `...+08:00`.
+///
+/// `split_whitespace` (not `splitn`) so repeated spaces still yield a usable
+/// time token. A string that does not look like `date time` is returned as-is.
+fn normalize_reset_datetime(s: &str) -> String {
+    let toks: Vec<&str> = s.split_whitespace().collect();
+    if toks.len() < 2 {
+        // A single token is already T-form (or not a datetime at all); only the
+        // colonless-offset rewrite can still apply.
+        return colonize_offset(s);
+    }
+    let (date, time) = (toks[0], toks[1]);
+    if date.len() != 10 || time.len() < 5 {
+        return s.to_string();
+    }
+    let mut out = format!("{date}T{time}");
+    if toks.len() >= 3 {
+        let upper = toks[2].to_ascii_uppercase();
+        let zone = if upper == "Z" {
+            "Z".to_string()
+        } else if let Some(rest) = upper
+            .strip_prefix("UTC")
+            .or_else(|| upper.strip_prefix("GMT"))
+        {
+            let rest = rest.trim();
+            if rest.is_empty() {
+                "Z".to_string()
+            } else {
+                let (sign, digits) = if let Some(d) = rest.strip_prefix('+') {
+                    ("+", d)
+                } else if let Some(d) = rest.strip_prefix('-') {
+                    ("-", d)
+                } else {
+                    ("+", rest)
+                };
+                let digits = digits.replace(':', "");
+                let (h, m) = match digits.len() {
+                    1 => (format!("0{digits}"), "00".to_string()),
+                    2 => (digits.clone(), "00".to_string()),
+                    3 => (format!("0{}", &digits[..1]), digits[1..].to_string()),
+                    _ => (digits[..2].to_string(), digits[2..].to_string()),
+                };
+                format!("{sign}{h}:{m}")
+            }
+        } else {
+            toks[2].to_string()
+        };
+        out.push_str(&zone);
+    }
+    colonize_offset(&out)
+}
+
+/// `+HHMM` → `+HH:MM`, so `DateTime::parse_from_rfc3339` accepts a colonless
+/// offset. A trailing token of any other shape is returned unchanged.
+fn colonize_offset(s: &str) -> String {
+    let b = s.as_bytes();
+    if b.len() >= 5
+        && (b[b.len() - 5] == b'+' || b[b.len() - 5] == b'-')
+        && b[b.len() - 4..].iter().all(u8::is_ascii_digit)
+    {
+        let (head, tail) = s.split_at(s.len() - 5);
+        return format!("{head}{}{}:{}", &tail[..1], &tail[1..3], &tail[3..]);
+    }
+    s.to_string()
 }
 
 /// A number, or the fallback when the value is missing, non-numeric, or not
@@ -740,6 +830,37 @@ mod tests {
         assert_eq!(
             parse_reset_time(Some(&json!("2023-11-14"))).unwrap(),
             "2023-11-14T00:00:00.000Z"
+        );
+        // Space-separated and colonless-offset forms are normalized before the
+        // parse (CodeBuddy's billing endpoint emits the space-separated shape).
+        // A zone-qualified form is deterministic regardless of the host TZ.
+        assert_eq!(
+            parse_reset_time(Some(&json!("2023-11-14 22:13:20 UTC+8"))).unwrap(),
+            "2023-11-14T14:13:20.000Z"
+        );
+        assert_eq!(
+            parse_reset_time(Some(&json!("2023-11-14 22:13:20 +0800"))).unwrap(),
+            "2023-11-14T14:13:20.000Z"
+        );
+        assert_eq!(
+            parse_reset_time(Some(&json!("2023-11-14T22:13:20+0800"))).unwrap(),
+            "2023-11-14T14:13:20.000Z"
+        );
+        // A naive datetime is local time, as JS `new Date()` reads it; compute
+        // the expectation with the same clock so the assertion is TZ-independent.
+        let naive = chrono::NaiveDate::from_ymd_opt(2023, 11, 14)
+            .unwrap()
+            .and_hms_opt(22, 13, 20)
+            .unwrap();
+        let expected = to_iso(
+            chrono::Local
+                .from_local_datetime(&naive)
+                .unwrap()
+                .timestamp_millis(),
+        );
+        assert_eq!(
+            parse_reset_time(Some(&json!("2023-11-14 22:13:20"))).unwrap(),
+            expected
         );
     }
 

@@ -5,6 +5,20 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **Quota tracker**: the CodeBuddy reset time showed `N/A` because
+  `parse_reset_time` only accepted RFC-3339 and bare dates, while the billing
+  endpoint emits the space-separated `YYYY-MM-DD HH:MM:SS` shape that JS
+  `new Date()` accepts. The parser now normalizes that form (and a `UTC+8` /
+  colonless `+0800` offset) before parsing.
+- **Grok CLI**: the client identity was pinned to `0.2.99`, below the minimum
+  `cli-chat-proxy.grok.com` now accepts, so upstream rejected every request with
+  HTTP 426. The version is bumped to `1.0.46` (the current `@xai-official/grok`
+  release) everywhere it is emitted — the executor constant, both copies of the
+  `grok-cli` transport in `registry.json`, the models endpoint User-Agent, the
+  OAuth test fallback, and the device-code User-Agent.
+
 ## [0.1.4] - 2026-10-02
 
 ### Fixed

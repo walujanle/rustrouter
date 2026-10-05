@@ -1907,11 +1907,11 @@ fn oauth_test_config(provider: &str) -> Option<OauthTestConfig> {
             vec![
                 (
                     "User-Agent".into(),
-                    "grok-pager/0.2.93 grok-shell/0.2.93 (linux; x86_64)".into(),
+                    "grok-pager/1.0.46 grok-shell/1.0.46 (linux; x86_64)".into(),
                 ),
                 ("x-xai-token-auth".into(), "xai-grok-cli".into()),
                 ("x-grok-client-identifier".into(), "grok-pager".into()),
-                ("x-grok-client-version".into(), "0.2.93".into()),
+                ("x-grok-client-version".into(), "1.0.46".into()),
             ]
         });
     let kilocode_base = registry()

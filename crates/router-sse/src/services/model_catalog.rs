@@ -433,7 +433,10 @@ fn grok_cli_model_headers(token: &str, credentials: &Credentials) -> Vec<(String
         ("Accept".to_string(), "application/json".to_string()),
         (
             "User-Agent".to_string(),
-            "grok-shell/0.2.99 (linux; x86_64)".to_string(),
+            format!(
+                "grok-shell/{} (linux; x86_64)",
+                crate::executors::grok_cli::GROK_CLI_VERSION
+            ),
         ),
         ("x-xai-token-auth".to_string(), "xai-grok-cli".to_string()),
         (

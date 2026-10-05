@@ -286,7 +286,7 @@ pub async fn request_device_code(
                 pairs.push(("referrer", referrer));
             }
             let body = encode_form(&pairs);
-            let ua = "grok-pager/0.2.93 grok-shell/0.2.93 (linux; x86_64)";
+            let ua = "grok-pager/1.0.46 grok-shell/1.0.46 (linux; x86_64)";
             let res = post_form(
                 cfg_str(&cfg, "deviceCodeUrl").unwrap_or_default(),
                 &body,
@@ -397,7 +397,7 @@ pub async fn poll_for_token(
     let cfg = oauth_config(provider)?;
     let (ok, data) = match provider {
         "grok-cli" => {
-            let ua = "grok-pager/0.2.93 grok-shell/0.2.93 (linux; x86_64)";
+            let ua = "grok-pager/1.0.46 grok-shell/1.0.46 (linux; x86_64)";
             let body = encode_form(&[
                 ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
                 ("device_code", device_code),

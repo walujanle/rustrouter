@@ -39,7 +39,7 @@ use crate::session_manager::{SessionIdentityInput, now_ms, resolve_session_id};
 use crate::translator::concerns::primitives::{js_string, js_truthy};
 use crate::translator::formats::responses_api::normalize_responses_input;
 
-pub const GROK_CLI_VERSION: &str = "0.2.99";
+pub const GROK_CLI_VERSION: &str = "1.0.46";
 pub const GROK_CLI_CLIENT_IDENTIFIER: &str = "grok-shell";
 
 /// Server-generated item id prefixes that `/responses` cannot resolve when
