@@ -5,6 +5,8 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-10-06
+
 ### Fixed
 
 - **Quota tracker**: the CodeBuddy reset time showed `N/A` because
