@@ -5,6 +5,17 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **CodeBuddy Intl**: `www.codebuddy.ai` now rejects chat requests lacking the
+  `X-Conversation-ID`, `X-Conversation-Request-ID` and `X-Conversation-Message-ID`
+  header family, returning HTTP 400 code 11128 ("conversation id missing").
+  `CodeBuddyIntlExecutor` overrides `build_headers` to inject all three: the
+  conversation id is a stable UUID v5 (RFC 4122) derived from the session key
+  (`prompt_cache_key` / `session_id` / `conversation_id`, then the first user
+  message text), so the upstream keeps conversation state pinned across retries
+  and failovers; the request and message ids are fresh UUIDs v4 per call.
+
 ## [0.1.5] - 2026-10-06
 
 ### Fixed

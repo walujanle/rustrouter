@@ -5,11 +5,13 @@
 //! the provider actually needs is overridden.
 
 use async_trait::async_trait;
+use reqwest::header::HeaderMap;
 use serde_json::{Value, json};
+use uuid::Uuid;
 
 use crate::credentials::Credentials;
 use crate::executors::default::DefaultExecutor;
-use crate::executors::executor::Executor;
+use crate::executors::executor::{ExecError, Executor, insert_header};
 use crate::providers::model::Transport;
 
 // ─── codebuddy ───────────────────────────────────────────────────────────
@@ -34,6 +36,50 @@ fn codebuddy_reasoning(transformed: &mut Value) {
         }
         None => {}
     }
+}
+
+/// Stable conversation id derived from the session key via UUID v5
+/// (RFC 4122 name-with-namespace DNS). Stable across retries and failovers so
+/// the upstream keeps conversation state pinned to the same session.
+fn codebuddy_conversation_id(credentials: &Credentials, body: Option<&Value>) -> String {
+    let seed = credentials
+        .psd_str("session_id")
+        .or_else(|| credentials.psd_str("prompt_cache_key"))
+        .or_else(|| credentials.psd_str("conversation_id"))
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            credentials
+                .header("x-session-id")
+                .or_else(|| credentials.header("x-client-request-id"))
+        })
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            body.and_then(|b| {
+                b.get("prompt_cache_key")
+                    .or_else(|| b.get("session_id"))
+                    .or_else(|| b.get("conversation_id"))
+                    .and_then(Value::as_str)
+            })
+            .filter(|s| !s.is_empty())
+        })
+        .or_else(|| {
+            // Fall back to the first user message text as the seed.
+            body.and_then(|b| {
+                b.get("messages")
+                    .and_then(Value::as_array)
+                    .and_then(|msgs| {
+                        msgs.iter().find(|m| {
+                            m.get("role").and_then(Value::as_str) == Some("user")
+                                && m.get("content").and_then(Value::as_str).is_some()
+                        })
+                    })
+                    .and_then(|m| m.get("content").and_then(Value::as_str))
+            })
+        })
+        .filter(|s| !s.is_empty());
+
+    let seed = seed.unwrap_or_else(|| uuid::Uuid::new_v4().to_string().leak());
+    Uuid::new_v5(&Uuid::NAMESPACE_DNS, seed.as_bytes()).to_string()
 }
 
 /// `CodeBuddyIntlExecutor`: the international gateway, which wants user content
@@ -108,6 +154,36 @@ impl Executor for CodeBuddyIntlExecutor {
         }
         transformed
     }
+
+    /// Inject the `X-Conversation-*` header family that the CodeBuddy
+    /// international gateway requires for channel verification. Without them
+    /// the gateway returns HTTP 400 code 11128 ("conversation id missing").
+    fn build_headers(
+        &self,
+        credentials: &Credentials,
+        stream: bool,
+        url: &str,
+        model: &str,
+        body: Option<&Value>,
+    ) -> Result<HeaderMap, ExecError> {
+        let mut headers = self
+            .inner
+            .build_headers(credentials, stream, url, model, body)?;
+
+        let conv_id = codebuddy_conversation_id(credentials, body);
+        insert_header(&mut headers, "X-Conversation-ID", &conv_id)?;
+        insert_header(
+            &mut headers,
+            "X-Conversation-Request-ID",
+            &uuid::Uuid::new_v4().to_string(),
+        )?;
+        insert_header(
+            &mut headers,
+            "X-Conversation-Message-ID",
+            &uuid::Uuid::new_v4().to_string(),
+        )?;
+        Ok(headers)
+    }
 }
 
 #[cfg(test)]
@@ -148,6 +224,55 @@ mod tests {
             messages[2]["content"],
             json!([{"type": "text", "text": "hi"}])
         );
+    }
+
+    #[test]
+    fn codebuddy_intl_injects_conversation_headers() {
+        let executor = CodeBuddyIntlExecutor::new();
+        let body = json!({"messages": [{"role": "user", "content": "hello"}]});
+        let mut credentials = Credentials::default();
+        credentials
+            .provider_specific_data
+            .insert("prompt_cache_key".into(), json!("conv-12345"));
+        let headers = executor
+            .build_headers(
+                &credentials,
+                true,
+                "https://www.codebuddy.ai/v1/chat/completions",
+                "m",
+                Some(&body),
+            )
+            .unwrap();
+        assert!(headers.contains_key("x-conversation-id"));
+        assert!(headers.contains_key("x-conversation-request-id"));
+        assert!(headers.contains_key("x-conversation-message-id"));
+    }
+
+    #[test]
+    fn codebuddy_conversation_id_is_stable_across_calls() {
+        let body = json!({"messages": [{"role": "user", "content": "hello"}]});
+        let mut credentials = Credentials::default();
+        credentials
+            .provider_specific_data
+            .insert("prompt_cache_key".into(), json!("conv-12345"));
+        let id1 = codebuddy_conversation_id(&credentials, Some(&body));
+        let id2 = codebuddy_conversation_id(&credentials, Some(&body));
+        assert_eq!(id1, id2);
+        // psd seed takes priority over body, so None body still yields the same id.
+        assert_eq!(id1, codebuddy_conversation_id(&credentials, None));
+    }
+
+    #[test]
+    fn codebuddy_conversation_id_falls_back_to_user_message_text() {
+        let body = json!({"messages": [
+            {"role": "user", "content": "what is the weather today?"},
+        ]});
+        let credentials = Credentials::default();
+        let id = codebuddy_conversation_id(&credentials, Some(&body));
+        assert!(!id.is_empty());
+        // Deterministic from the message text.
+        let id2 = codebuddy_conversation_id(&credentials, Some(&body));
+        assert_eq!(id, id2);
     }
 
     #[test]

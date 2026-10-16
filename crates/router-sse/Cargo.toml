@@ -28,7 +28,7 @@ tokio = { workspace = true, features = ["rt", "time", "sync", "fs", "process", "
 tokio-util.workspace = true
 tracing.workspace = true
 url.workspace = true
-uuid.workspace = true
+uuid = { workspace = true, features = ["v4", "v5"] }
 
 # Android only. reqwest's rustls verifier is JNI-backed there and panics under
 # Termux, which has no JVM; `http::tls_builder` builds the trust store from
