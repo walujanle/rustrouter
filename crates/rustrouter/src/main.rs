@@ -33,6 +33,18 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 /// and the stream fan-out, without one thread per core on a 32-core box.
 const MIN_WORKER_THREADS: usize = 4;
 const MAX_WORKER_THREADS: usize = 8;
+
+/// Stack size for each runtime thread.
+///
+/// Tokio passes this straight to `std::thread`, which uses 2 MiB when it is
+/// unset on both Unix and Windows, so pinning it does not change the platform
+/// default. It is pinned anyway so the ceiling is a property of this program
+/// rather than of the toolchain, and raised above the default because the chat
+/// pipeline recurses over client-supplied JSON (tool schemas, usage envelopes,
+/// session hints). The recursion that actually overflowed was a combo listing
+/// itself, which is now rejected by name in `handlers::chat`; this size is
+/// headroom for the JSON walkers, not the fix for that bug.
+const RUNTIME_STACK_SIZE: usize = 8 * 1024 * 1024;
 /// Blocking threads: the SQLite pool is 4, plus the checkpoint task and the
 /// schedulers. 512 (the tokio default) is a thread-per-request ceiling nobody
 /// wants on a small host.
@@ -47,6 +59,7 @@ fn server_runtime() -> std::io::Result<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(workers)
         .max_blocking_threads(MAX_BLOCKING_THREADS)
+        .thread_stack_size(RUNTIME_STACK_SIZE)
         .enable_all()
         .build()
 }

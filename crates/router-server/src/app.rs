@@ -408,4 +408,64 @@ mod tests {
             );
         }
     }
+
+    /// A combo that lists itself must be rejected at save time, so the cycle
+    /// never reaches the chat pipeline (which would otherwise recurse until the
+    /// stack aborts the process).
+    #[tokio::test]
+    async fn a_self_referencing_combo_is_rejected_on_save() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let paths = scratch_paths_for("combo-cycle");
+        let db = Db::open(&paths.data_file, 1).expect("open scratch db");
+        db.with_conn(router_db::migrations::ensure_schema)
+            .expect("create schema");
+        let state = AppState::new(db, paths).expect("build app state");
+        let peer: std::net::SocketAddr = "127.0.0.1:5000".parse().unwrap();
+        // `/api/*` is behind the guard; the CLI token is the in-process key.
+        let token = state.cli_token().to_string();
+
+        // Save the combo, then patch it to list itself. Both writes go through
+        // the router so the handler's own validation runs.
+        let create = Request::builder()
+            .method("POST")
+            .uri("/api/combos")
+            .header("content-type", "application/json")
+            .header("x-9r-cli-token", &token)
+            .body(Body::from(r#"{"name":"loop","models":["openai/gpt-5"]}"#))
+            .unwrap();
+        let mut create = create;
+        create
+            .extensions_mut()
+            .insert(axum::extract::ConnectInfo(peer));
+        let response = router(state.clone())
+            .oneshot(create)
+            .await
+            .expect("router answers");
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        let combos = state
+            .read(router_db::repos::combos::get_combos)
+            .await
+            .expect("read combos");
+        let id = combos[0]
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .expect("combo id");
+
+        let mut update = Request::builder()
+            .method("PUT")
+            .uri(format!("/api/combos/{id}"))
+            .header("content-type", "application/json")
+            .header("x-9r-cli-token", &token)
+            .body(Body::from(r#"{"models":["loop"]}"#))
+            .unwrap();
+        update
+            .extensions_mut()
+            .insert(axum::extract::ConnectInfo(peer));
+        let response = router(state).oneshot(update).await.expect("router answers");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
 }

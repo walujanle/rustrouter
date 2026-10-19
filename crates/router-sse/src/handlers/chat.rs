@@ -172,6 +172,13 @@ pub async fn handle_chat(db: &Db, request: ChatRequest<'_>) -> ChatResult {
             .cloned()
             .collect();
 
+        // The requested name is the outermost level of the expansion, so a combo
+        // that lists itself fails here instead of one level deeper.
+        let mut chain = ComboChain::new();
+        if let Err(error) = push_combo(&mut chain, &model_str) {
+            return ChatResult::error(http_status::BAD_REQUEST, &error);
+        }
+
         if strategy == "fusion" {
             return run_fusion(
                 db,
@@ -182,6 +189,7 @@ pub async fn handle_chat(db: &Db, request: ChatRequest<'_>) -> ChatResult {
                 headers,
                 endpoint,
                 api_key,
+                chain,
             )
             .await;
         }
@@ -206,6 +214,7 @@ pub async fn handle_chat(db: &Db, request: ChatRequest<'_>) -> ChatResult {
                 endpoint,
                 api_key.clone(),
                 Arc::clone(&slot),
+                &chain,
             ),
         )
         .await;
@@ -237,17 +246,28 @@ pub async fn handle_chat(db: &Db, request: ChatRequest<'_>) -> ChatResult {
                 endpoint,
                 api_key.clone(),
                 Arc::clone(&slot),
+                &ComboChain::new(),
             ),
         )
         .await;
         return combo_result(outcome, &slot);
     }
 
-    handle_single_model_chat(db, body, &model_str, headers, endpoint, api_key).await
+    handle_single_model_chat(
+        db,
+        body,
+        &model_str,
+        headers,
+        endpoint,
+        api_key,
+        ComboChain::new(),
+    )
+    .await
 }
 
 /// The `withCapacityAdapterStripping((b, m) => handleSingleModelChat(...))`
 /// callback, storing the winning result so the combo loop can hand it back.
+#[allow(clippy::too_many_arguments)]
 fn combo_closure<'a>(
     db: &'a Db,
     body: &'a Value,
@@ -256,6 +276,7 @@ fn combo_closure<'a>(
     endpoint: Option<&'a str>,
     api_key: Option<String>,
     slot: ResultSlot,
+    chain: &'a ComboChain,
 ) -> impl FnMut(
     usize,
     &str,
@@ -268,10 +289,20 @@ fn combo_closure<'a>(
         }
         let api_key = api_key.clone();
         let slot = Arc::clone(&slot);
+        // Each attempt starts from the chain this combo was expanded under, so a
+        // member that is itself a combo extends the same path.
+        let chain = chain.clone();
         Box::pin(async move {
-            let result =
-                handle_single_model_chat(db, attempt_body, &model, headers, endpoint, api_key)
-                    .await;
+            let result = handle_single_model_chat(
+                db,
+                attempt_body,
+                &model,
+                headers,
+                endpoint,
+                api_key,
+                chain,
+            )
+            .await;
             if result.success() {
                 // Only a buffered JSON body can be inspected. A live stream has
                 // already begun writing to the client, so it always wins.
@@ -329,6 +360,50 @@ fn combo_result(outcome: ComboOutcome, slot: &ResultSlot) -> ChatResult {
     }
 }
 
+/// Combo names already being expanded for this request, outermost first.
+///
+/// A combo's `models` list is user data and may name another combo, which the
+/// single-model path re-enters because the name is not a `provider/model` pair.
+/// Nothing stops a combo listing itself, or two combos listing each other, so
+/// the expansion is a walk over a graph the caller wrote and needs a guard.
+/// Without one the recursion is bounded only by the stack: the process aborts
+/// with `has overflowed its stack` instead of answering, and a larger stack only
+/// moves the abort further out.
+///
+/// Carried explicitly rather than in a thread-local: a tokio worker can migrate
+/// a task between threads at an await point, so a thread-local push/pop pair
+/// would not reliably meet on the same thread.
+type ComboChain = Vec<String>;
+
+/// Depth cap for a chain that is long but acyclic.
+///
+/// A cycle is caught by name, so this only bounds a deep nest of distinct
+/// combos. The value is far below any depth that would exhaust a runtime
+/// thread's stack, and well above real use.
+const MAX_COMBO_DEPTH: usize = 16;
+
+/// Push `name` onto the chain, or return the message explaining why not.
+///
+/// The message rather than a `ChatResult` because the caller is usually inside a
+/// larger expression and only needs the 400; keeping the error small also keeps
+/// the future small.
+fn push_combo(chain: &mut ComboChain, name: &str) -> Result<(), String> {
+    if let Some(at) = chain.iter().position(|n| n == name) {
+        let path = chain[at..]
+            .iter()
+            .map(String::as_str)
+            .chain(std::iter::once(name))
+            .collect::<Vec<_>>()
+            .join(" -> ");
+        return Err(format!("Combo cycle: {path}"));
+    }
+    if chain.len() >= MAX_COMBO_DEPTH {
+        return Err(format!("Combo nesting exceeds {MAX_COMBO_DEPTH} levels"));
+    }
+    chain.push(name.to_string());
+    Ok(())
+}
+
 /// `handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey)`.
 ///
 /// Boxed because it and [`run_fusion`] call each other: an unboxed cycle makes
@@ -341,9 +416,10 @@ pub fn handle_single_model_chat<'a>(
     headers: &'a HashMap<String, String>,
     endpoint: Option<&'a str>,
     api_key: Option<String>,
+    chain: ComboChain,
 ) -> Pin<Box<dyn Future<Output = ChatResult> + Send + 'a>> {
     Box::pin(handle_single_model_chat_inner(
-        db, body, model_str, headers, endpoint, api_key,
+        db, body, model_str, headers, endpoint, api_key, chain,
     ))
 }
 
@@ -354,6 +430,7 @@ async fn handle_single_model_chat_inner(
     headers: &HashMap<String, String>,
     endpoint: Option<&str>,
     api_key: Option<String>,
+    mut chain: ComboChain,
 ) -> ChatResult {
     let log: Arc<dyn ChatLog> = Arc::new(TracingChatLog);
     let aliases = db
@@ -372,6 +449,11 @@ async fn handle_single_model_chat_inner(
         // A combo name that reached the single-model path: re-check, since the
         // caller may have routed here directly.
         if let Some(combo_models) = get_combo_models(model_str, combo_lookup) {
+            // The chain covers the whole expansion below, including the
+            // recursion through `combo_closure` and `run_fusion`.
+            if let Err(error) = push_combo(&mut chain, model_str) {
+                return ChatResult::error(http_status::BAD_REQUEST, &error);
+            }
             let settings = db
                 .with_conn(router_db::repos::settings::get_settings)
                 .unwrap_or(Value::Null);
@@ -386,6 +468,7 @@ async fn handle_single_model_chat_inner(
                     headers,
                     endpoint,
                     api_key,
+                    chain,
                 )
                 .await;
             }
@@ -417,6 +500,7 @@ async fn handle_single_model_chat_inner(
                     endpoint,
                     api_key,
                     Arc::clone(&slot),
+                    &chain,
                 ),
             )
             .await;
@@ -634,6 +718,7 @@ async fn run_fusion(
     headers: &HashMap<String, String>,
     endpoint: Option<&str>,
     api_key: Option<String>,
+    chain: ComboChain,
 ) -> ChatResult {
     let combo_strategies = settings.get("comboStrategies");
     let judge_model = combo_strategies
@@ -654,6 +739,9 @@ async fn run_fusion(
     // `String`.
     let panel_db = db.clone();
     let panel_endpoint = endpoint.map(str::to_string);
+    // The panel runs each member as its own task, so the chain has to be owned
+    // and cloned per callback rather than borrowed.
+    let panel_chain = chain.clone();
     let outcome = handle_fusion_chat(
         &body,
         &combo_models,
@@ -664,6 +752,7 @@ async fn run_fusion(
             let api_key = panel_api_key.clone();
             let db = panel_db.clone();
             let endpoint = panel_endpoint.clone();
+            let chain = panel_chain.clone();
             async move {
                 let result = handle_single_model_chat(
                     &db,
@@ -672,6 +761,7 @@ async fn run_fusion(
                     &headers,
                     endpoint.as_deref(),
                     api_key,
+                    chain,
                 )
                 .await;
                 if !result.success() {
@@ -692,10 +782,11 @@ async fn run_fusion(
 
     match outcome {
         FusionOutcome::Judge { body, model } => {
-            handle_single_model_chat(db, body, &model, headers, endpoint, api_key).await
+            handle_single_model_chat(db, body, &model, headers, endpoint, api_key, chain).await
         }
         FusionOutcome::Direct { model } => {
-            handle_single_model_chat(db, panel_body, &model, headers, endpoint, api_key).await
+            handle_single_model_chat(db, panel_body, &model, headers, endpoint, api_key, chain)
+                .await
         }
         FusionOutcome::Failed { status, message } => ChatResult::error(status, &message),
     }

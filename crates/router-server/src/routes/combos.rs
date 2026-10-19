@@ -25,6 +25,67 @@ fn is_valid_name(name: &str) -> bool {
 
 const INVALID_NAME: &str = "Name can only contain letters, numbers, -, _ and .";
 
+/// Reject a save that would make combo expansion cyclic.
+///
+/// A combo's `models` entries that are not `provider/model` pairs may name
+/// another combo, and `handlers::chat` expands those recursively. The runtime
+/// guard there answers 400 instead of recursing, but the cycle is a property of
+/// the stored rows: catching it at save time tells the user which pair is wrong
+/// and keeps a broken graph out of the database in the first place.
+///
+/// `combos` is the full list after the write would land (the row being saved
+/// already replaced or added), and `edited` is the name whose row changed, so a
+/// pre-existing cycle elsewhere is not blamed on this edit.
+fn cycle_error(combos: &[Value], edited: &str) -> Option<String> {
+    // name -> models, for combo names only. A `provider/model` entry can never
+    // be a combo: `get_combo_models` refuses any name containing `/`.
+    let members: std::collections::HashMap<&str, Vec<&str>> = combos
+        .iter()
+        .filter_map(|c| {
+            let name = c.get("name").and_then(Value::as_str)?;
+            let models = c
+                .get("models")
+                .and_then(Value::as_array)?
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|m| !m.contains('/'))
+                .collect::<Vec<_>>();
+            Some((name, models))
+        })
+        .collect();
+
+    fn walk<'a>(
+        members: &std::collections::HashMap<&'a str, Vec<&'a str>>,
+        name: &'a str,
+        path: &mut Vec<&'a str>,
+        seen: &mut std::collections::HashSet<&'a str>,
+    ) -> Option<Vec<String>> {
+        if path.contains(&name) {
+            let at = path.iter().position(|n| *n == name).unwrap_or(0);
+            let mut cycle: Vec<String> = path[at..].iter().map(|n| (*n).to_string()).collect();
+            cycle.push(name.to_string());
+            return Some(cycle);
+        }
+        if !seen.insert(name) {
+            return None;
+        }
+        path.push(name);
+        if let Some(children) = members.get(name) {
+            for child in children {
+                if let Some(cycle) = walk(members, child, path, seen) {
+                    return Some(cycle);
+                }
+            }
+        }
+        path.pop();
+        None
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    walk(&members, edited, &mut Vec::new(), &mut seen)
+        .map(|cycle| format!("Combo cycle: {}", cycle.join(" -> ")))
+}
+
 /// `GET /api/combos`.
 pub async fn list(State(state): State<AppState>) -> Response {
     match state.read(router_db::repos::combos::get_combos).await {
@@ -65,6 +126,18 @@ pub async fn create(
         "models": payload.get("models").cloned().unwrap_or(json!([])),
         "kind": payload.get("kind").cloned().unwrap_or(Value::Null),
     });
+
+    // The new row is what the graph would look like; check it before the write.
+    let existing_combos = state
+        .read(router_db::repos::combos::get_combos)
+        .await
+        .unwrap_or_default();
+    let mut after: Vec<Value> = existing_combos;
+    after.push(data.clone());
+    if let Some(error) = cycle_error(&after, name) {
+        return ApiError::bad_request(&error).into_response();
+    }
+
     match state
         .write(move |tx| router_db::repos::combos::create_combo(tx, &data))
         .await
@@ -123,6 +196,42 @@ pub async fn update(
         .await
         .ok()
         .flatten();
+
+    // Check the graph the update would produce. The edited row is replaced in
+    // place so its new `models` are what the walk follows.
+    let edited_name = payload
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| {
+            prev.as_ref()
+                .and_then(|p| p.get("name"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        });
+    if let Some(edited_name) = edited_name {
+        let existing = state
+            .read(router_db::repos::combos::get_combos)
+            .await
+            .unwrap_or_default();
+        let mut after: Vec<Value> = Vec::with_capacity(existing.len());
+        for row in existing {
+            if row.get("id").and_then(Value::as_str) == Some(id.as_str()) {
+                let mut merged = row.as_object().cloned().unwrap_or_default();
+                if let Some(patch) = payload.as_object() {
+                    for (k, v) in patch {
+                        merged.insert(k.clone(), v.clone());
+                    }
+                }
+                after.push(Value::Object(merged));
+            } else {
+                after.push(row);
+            }
+        }
+        if let Some(error) = cycle_error(&after, &edited_name) {
+            return ApiError::bad_request(&error).into_response();
+        }
+    }
 
     let Ok(combo) = state
         .write(move |tx| router_db::repos::combos::update_combo(tx, &id, &payload))
@@ -288,5 +397,44 @@ mod tests {
         assert!(!is_valid_name(""));
         assert!(!is_valid_name("has space"));
         assert!(!is_valid_name("slash/name"));
+    }
+
+    fn combos(rows: &[(&str, &[&str])]) -> Vec<Value> {
+        rows.iter()
+            .map(|(name, models)| json!({"name": name, "models": models}))
+            .collect()
+    }
+
+    #[test]
+    fn a_self_reference_is_a_cycle() {
+        let error = cycle_error(&combos(&[("loop", &["loop"])]), "loop").unwrap();
+        assert_eq!(error, "Combo cycle: loop -> loop");
+    }
+
+    #[test]
+    fn a_two_hop_cycle_is_reported_from_the_edited_name() {
+        let error = cycle_error(&combos(&[("a", &["b"]), ("b", &["a"])]), "a").unwrap();
+        assert_eq!(error, "Combo cycle: a -> b -> a");
+    }
+
+    #[test]
+    fn provider_models_and_plain_leaves_are_not_cycles() {
+        // `openai/gpt-5` is a provider/model pair, never a combo name.
+        assert!(
+            cycle_error(
+                &combos(&[("a", &["openai/gpt-5", "b"]), ("b", &["x/y"])]),
+                "a"
+            )
+            .is_none()
+        );
+        // A chain that ends at a model is fine.
+        assert!(cycle_error(&combos(&[("a", &["b"]), ("b", &["c/1"])]), "a").is_none());
+    }
+
+    #[test]
+    fn a_cycle_elsewhere_is_not_blamed_on_this_edit() {
+        // `x -> y -> x` exists, but the edited combo does not reach it.
+        let rows = combos(&[("x", &["y"]), ("y", &["x"]), ("clean", &["c/1"])]);
+        assert!(cycle_error(&rows, "clean").is_none());
     }
 }
