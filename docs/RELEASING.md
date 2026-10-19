@@ -109,6 +109,54 @@ pull in only the one matching `os`/`cpu`. The `bin` target is a JS shim because
 npm requires a shebang'd JS file; it resolves the platform package and execs the
 real binary.
 
+### The global prefix
+
+A distro-packaged Node puts the global prefix at `/usr`, so `npm install -g`
+writes to `/usr/lib/node_modules` and links into `/usr/bin`. Both belong to
+root. A normal user's install fails in npm's reify step, before any lifecycle
+script of ours runs:
+
+```
+npm error code EACCES
+npm error syscall mkdir
+npm error path /usr/lib/node_modules/rustrouter
+```
+
+A `preinstall` script never fires on this path: npm creates the package
+directory during reify, before any lifecycle script runs. The package therefore
+cannot intercept the failure and print a nicer message; a script would only add
+a warning to installs that were going to succeed.
+
+The remedy is a user-owned prefix, documented in the README's Install section:
+
+```bash
+npm config set prefix ~/.local
+npm install -g rustrouter
+```
+
+`npm config set`, not a one-off `--prefix`: only the config form writes
+`~/.npmrc`, and the update command the server hands the user is a bare
+`npm i -g rustrouter@latest`, which needs the same prefix to find the install.
+Do not tell users to `sudo npm install -g`; the shim and the platform binary
+work from a user prefix, and sudo leaves a root-owned tree behind.
+
+### Install scripts
+
+npm 12 blocks dependency lifecycle scripts by default; npm 11 and earlier run
+them. The shim needs no script, so a Linux, macOS or Windows install is fully
+functional either way. The only casualty is the Termux download below, which is
+skipped. Termux users need `--allow-scripts=rustrouter`:
+
+```bash
+npm install -g --allow-scripts=rustrouter rustrouter
+```
+
+Keep `postinstall.js` fail-soft and keep the package working when it never runs.
+Because the script may never run, the failure has to be readable at exec time:
+`bin/rustrouter.js` maps a spawn `ENOENT` to a message naming the blocked
+Android build, a missing platform package (`--omit=optional`), or a binary whose
+dynamic loader is missing.
+
 ### Termux
 
 Termux reports itself to npm as `linux`/`arm64`, so npm installs the glibc
@@ -200,7 +248,9 @@ no stored token, so a new version needs no manual step.
 - `node scripts/extract-changelog.mjs x.y.z` prints the notes that will be used.
 - The Release should carry six assets, each with a `digest`.
 - `npm i -g rustrouter` on a clean machine, then `rustrouter --version` prints
-  the released version. On Termux the same command works through the postinstall
-  path.
+  the released version. Do this both as a normal user and with
+  `npm config set prefix ~/.local`; the second proves the shim resolves the
+  platform package from a user-owned tree. On Termux use
+  `npm i -g --allow-scripts=rustrouter rustrouter` so the postinstall path runs.
 - A running older binary reports `updateAvailable: true` on `/api/version` and
   shows the sidebar banner within a couple of seconds of load.

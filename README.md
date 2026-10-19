@@ -17,10 +17,36 @@ can run side by side.
 npm install -g rustrouter
 ```
 
-The npm package ships a JS shim plus one platform binary per OS/arch. On
-Termux, where npm reports `linux/arm64` but the glibc binary will not load under
-Bionic, the postinstall script downloads the Android asset and verifies its
-sha256 against the GitHub Release before swapping it in.
+On a distro-packaged Node the global prefix is `/usr`, which belongs to root, so
+a normal user's install stops with `EACCES: permission denied, mkdir
+'/usr/lib/node_modules/rustrouter'`. Point npm at a directory you own instead of
+running it with `sudo`:
+
+```bash
+npm config set prefix ~/.local
+npm install -g rustrouter
+```
+
+Use `npm config set`, not a one-off `--prefix`: the config is persisted in
+`~/.npmrc`, and the in-app update runs a bare `npm i -g rustrouter@latest`, which
+needs the same prefix to find the install. This changes the prefix for every
+global package, so skip it if `npm prefix -g` already points somewhere you own
+(nvm, fnm, Volta, mise). If `rustrouter` is not found afterwards, put
+`~/.local/bin` on your `PATH`. Windows needs none of this, because npm installs
+into `%AppData%\npm`.
+
+The npm package ships a JS shim plus one platform binary per OS/arch. The shim
+needs no install script, so npm 12's policy of blocking scripts by default does
+not affect Linux, macOS or Windows.
+
+Termux is the exception: npm reports it as `linux/arm64`, so the glibc binary
+cannot load under Bionic, and `scripts/postinstall.js` downloads the Android
+asset instead. Allow that script explicitly, or the first run exits with a
+message naming the command:
+
+```bash
+npm install -g --allow-scripts=rustrouter rustrouter
+```
 
 Or build from source:
 

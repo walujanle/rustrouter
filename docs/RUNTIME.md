@@ -202,6 +202,11 @@ make `updateAvailable` permanently true. The sidebar offers a copy-and-shutdown 
 Docker — a container cannot pull its own replacement, and `restart: always` would bring the old one
 straight back. `rustrouter update-check` prints the same method and command offline.
 
+The npm command is a bare `npm i -g rustrouter@latest`, so it only works when the install prefix is
+persisted in `~/.npmrc`. A user who installed with a one-off `--prefix ~/.local` gets the binary in
+the right place but the update re-targets `/usr`. That is why the README's remedy is `npm config set
+prefix ~/.local` rather than `npm install -g --prefix ...`.
+
 ## Launcher behaviour
 
 `rustrouter serve` does three things beyond binding the listener, all in
