@@ -3,6 +3,15 @@
 All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is semantic.
 
+## [0.2.2] - 2026-10-19
+
+### Fixed
+
+- **source-map-js event-loop DoS (GHSA-68fv-2mgg-jv7q)**: `npm audit` on `web/`
+  flagged source-map-js 1.2.1, where crafted indexed source-map section offsets
+  spin the event loop. Bumped to 1.2.2. The dependents (`^1.2.1`) already accept
+  it, so only `web/package-lock.json` moved.
+
 ## [0.2.1] - 2026-10-19
 
 ### Added
