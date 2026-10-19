@@ -40,6 +40,32 @@ All notable changes to this project are documented here. Format follows
 
 ### Fixed
 
+- **Combo cycles aborted the process**: a combo whose `models` list names itself,
+  or two combos naming each other, made `handle_single_model_chat` re-enter combo
+  expansion until the stack ran out. The abort surfaced as `thread
+  'tokio-rt-worker' (…) has overflowed its stack`, and raising the stack size only
+  moved it. Expansion now carries the chain of combo names being resolved and
+  answers 400 `Combo cycle: a -> b -> a` on a repeat, with a 16-level cap for a
+  deep but acyclic nest. `POST`/`PUT /api/combos` reject a cycle at save time, so
+  the graph never stores one. The bug was present in v0.1.1 as well; it is not a
+  regression.
+- **Runtime thread stack size is pinned**: `server_runtime` sets an 8 MiB stack
+  explicitly. Tokio otherwise passes the choice to `std::thread`, which uses 2 MiB
+  on both Unix and Windows, so this is headroom for the recursive JSON walkers,
+  not the fix above.
+- **npm install as a non-root user**: a distro Node's global prefix is `/usr`,
+  owned by root, so `npm install -g rustrouter` fails during npm's reify step with
+  `EACCES: permission denied, mkdir '/usr/lib/node_modules/rustrouter'` before any
+  lifecycle script runs. The README and `npm/README.md` now name that cause and
+  the remedy, `npm config set prefix ~/.local`, rather than a one-off `--prefix`,
+  because the in-app update is a bare `npm i -g rustrouter@latest`. Windows is
+  unchanged.
+- **npm 12 blocked the Termux postinstall**: the shim is script-free, so the
+  only casualty is the Android download. `bin/rustrouter.js` now turns the
+  resulting `spawnSync … ENOENT` into a message naming the cause and the
+  `--allow-scripts=rustrouter` flag, and distinguishes a missing platform
+  package from a glibc mismatch. `npm/README.md` is added so the npmjs page
+  carries the install instructions.
 - **CodeBuddy Intl**: `www.codebuddy.ai` now rejects chat requests lacking the
   `X-Conversation-ID`, `X-Conversation-Request-ID` and `X-Conversation-Message-ID`
   header family, returning HTTP 400 code 11128 ("conversation id missing").
