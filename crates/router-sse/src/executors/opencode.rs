@@ -51,6 +51,10 @@ pub(crate) const SESSION_HEADER: &str = "x-opencode-session";
 const SESSION_FIELD: &str = "_opencodeSession";
 const REQ_FIELD: &str = "_opencodeRequest";
 const BASE62_CHARS: &str = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+/// Low 48 bits of the negated `time * 0x1000 + counter` prefix.
+const SESSION_PREFIX_MASK: u64 = (1 << 48) - 1;
+/// The time field is 36 bits wide, so the digest value is truncated to it.
+const SESSION_TIME_MASK: u64 = (1 << 36) - 1;
 /// Cap on the stable-session store.
 const MAX_STABLE_SESSIONS: usize = 1000;
 /// How long a stable session survives without use.
@@ -140,11 +144,15 @@ pub(crate) fn translate_session_id(session_id: Option<&str>, client_tool: &str) 
     };
     let digest =
         Sha256::digest(format!("opencode\0{tool}\0{}", session_id.unwrap_or("")).as_bytes());
-    format!(
-        "ses_{}{}",
-        hex::encode(&digest[..6]),
-        digest_tail(&digest[..])
-    )
+    // The upstream decodes the prefix, so the time field must be a real
+    // 36-bit time value with the counter pinned to 1 (what the CLI sends),
+    // complemented and masked to 48 bits. The counter is never zero and never
+    // large: a non-small counter is rejected with 403 FreeTierError.
+    let time = u64::from_be_bytes([
+        0, 0, 0, digest[0], digest[1], digest[2], digest[3], digest[4],
+    ]) & SESSION_TIME_MASK;
+    let prefix = (!(time.wrapping_mul(0x1000).wrapping_add(1))) & SESSION_PREFIX_MASK;
+    format!("ses_{}{}", id_time_hex(prefix), digest_tail(&digest[..]))
 }
 
 pub(crate) fn normalize_session(value: &str) -> Option<String> {

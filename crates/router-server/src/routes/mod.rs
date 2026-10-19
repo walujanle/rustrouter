@@ -4,6 +4,7 @@ pub mod auth;
 pub mod catalog_sync;
 pub mod cli_tools;
 pub mod combos;
+pub mod key_access;
 pub mod keys;
 pub mod misc;
 pub mod models;

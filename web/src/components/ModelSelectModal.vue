@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 
 import CapacityBadges from "@/components/ui/CapacityBadges.vue";
 import ProviderIcon from "@/components/ui/ProviderIcon.vue";
@@ -11,11 +11,15 @@ import {
 	useProviders,
 } from "@/constants/providers";
 import { useModelCaps } from "@/hooks/useModelCaps";
+import { get } from "@/utils/api";
+import { getDeactivatedProviderIds } from "@/utils/connectionStatus";
+import { filterModelsByQuery, matchesSearch, parseSearchQuery } from "@/utils/modelSearchFilter";
 
 interface ActiveProvider {
 	id?: string;
 	provider?: string;
 	name?: string;
+	isActive?: boolean;
 	providerSpecificData?: Record<string, any>;
 }
 
@@ -30,9 +34,11 @@ const props = withDefaults(
 		capFilter?: string | null;
 		addedModelValues?: string[];
 		closeOnSelect?: boolean;
+		size?: "sm" | "md" | "lg" | "xl" | "full";
 	}>(),
 	{
 		title: "Select Model",
+		size: "md",
 		modelAliases: () => ({}),
 		kindFilter: null,
 		capFilter: null,
@@ -42,7 +48,13 @@ const props = withDefaults(
 	},
 );
 
-const emit = defineEmits<{ close: []; select: [model: any]; deselect: [model: any] }>();
+const emit = defineEmits<{
+	close: [];
+	select: [model: any];
+	deselect: [model: any];
+	selectBatch: [models: any[]];
+	deselectBatch: [models: any[]];
+}>();
 
 const { AI_PROVIDERS, FREE_PROVIDERS, FREE_TIER_PROVIDERS, OAUTH_PROVIDERS, APIKEY_PROVIDERS, getProviderAlias } =
 	useProviders();
@@ -61,10 +73,34 @@ const PROVIDER_ORDER = [
 const NO_AUTH_PROVIDER_IDS = Object.keys(FREE_PROVIDERS).filter((id) => FREE_PROVIDERS[id].noAuth);
 
 const searchQuery = ref("");
+const fetchedConnections = ref<ActiveProvider[] | null>(null);
+let connectionsAbort: AbortController | null = null;
 const combos = ref<Array<Record<string, any>>>([]);
 const providerNodes = ref<Array<Record<string, any>>>([]);
 const customModels = ref<Array<Record<string, any>>>([]);
 const disabledModels = ref<Record<string, string[]>>({});
+
+/**
+ * The connection list is refetched on open because the prop goes stale: a
+ * caller passes the list it read on mount, and a connection added or paused in
+ * another tab would not appear. On failure the prop stays authoritative rather
+ * than blanking the picker.
+ */
+async function fetchConnections() {
+	connectionsAbort?.abort();
+	const controller = new AbortController();
+	connectionsAbort = controller;
+	try {
+		const data = (await get("/api/providers", {
+			signal: controller.signal,
+		})) as { connections?: ActiveProvider[] };
+		fetchedConnections.value = data?.connections || [];
+	} catch (error) {
+		if (controller.signal.aborted) return;
+		console.error("Error fetching providers in ModelSelectModal:", error);
+		fetchedConnections.value = null;
+	}
+}
 
 async function fetchCombos() {
 	try {
@@ -117,7 +153,12 @@ async function fetchDisabledModels() {
 watch(
 	() => props.isOpen,
 	(open) => {
-		if (!open) return;
+		if (!open) {
+			connectionsAbort?.abort();
+			connectionsAbort = null;
+			return;
+		}
+		fetchConnections();
 		fetchCombos();
 		fetchProviderNodes();
 		fetchCustomModels();
@@ -126,6 +167,11 @@ watch(
 	{ immediate: true },
 );
 
+onBeforeUnmount(() => {
+	connectionsAbort?.abort();
+	connectionsAbort = null;
+});
+
 const allProviders = computed(() => ({
 	...OAUTH_PROVIDERS,
 	...FREE_PROVIDERS,
@@ -133,15 +179,26 @@ const allProviders = computed(() => ({
 	...APIKEY_PROVIDERS,
 }));
 
-// Filter activeProviders by serviceKinds when kindFilter set (e.g. "webSearch", "webFetch")
+// The live list wins once it lands; before that the prop is the best guess.
+const effectiveConnections = computed<ActiveProvider[]>(
+	() => fetchedConnections.value ?? props.activeProviders,
+);
+
+// Filter connections by active state and serviceKinds when kindFilter is set.
 const filteredActiveProviders = computed(() => {
-	if (!props.kindFilter) return props.activeProviders;
-	return props.activeProviders.filter((p) => {
+	const active = effectiveConnections.value.filter((p) => p && p.isActive !== false);
+	if (!props.kindFilter) return active;
+	return active.filter((p) => {
 		const info = AI_PROVIDERS[p.provider ?? ""];
 		const kinds = info?.serviceKinds || ["llm"];
 		return kinds.includes(props.kindFilter);
 	});
 });
+
+// A provider is deactivated only when every one of its connections is inactive.
+const deactivatedProviderIds = computed(() =>
+	getDeactivatedProviderIds(effectiveConnections.value),
+);
 
 // Group models by provider with priority order
 const groupedModels = computed<Record<string, any>>(() => {
@@ -171,12 +228,40 @@ const groupedModels = computed<Record<string, any>>(() => {
 	const activeConnectionIds = filteredActiveProviders.value.map((p) => p.provider);
 
 	// No-auth providers: filter by kindFilter as well
-	const noAuthIds = props.kindFilter
-		? NO_AUTH_PROVIDER_IDS.filter((id) => (AI_PROVIDERS[id]?.serviceKinds || ["llm"]).includes(props.kindFilter as string))
-		: NO_AUTH_PROVIDER_IDS;
+	const noAuthIds = (
+		props.kindFilter
+			? NO_AUTH_PROVIDER_IDS.filter((id) =>
+					(AI_PROVIDERS[id]?.serviceKinds || ["llm"]).includes(props.kindFilter as string),
+				)
+			: NO_AUTH_PROVIDER_IDS
+	).filter((id) => !deactivatedProviderIds.value.has(id));
+
+	// Compatible nodes (OpenAI/Anthropic) that already have user-added custom
+	// models stay selectable without a connection: local and self-hosted
+	// endpoints do not always need a stored key, and gating on connections
+	// hides models the user has already added. These are LLM-only, so they
+	// appear only when no kind filter is active.
+	const existingNodeIds = new Set(
+		providerNodes.value.map((node) => node?.id).filter((id): id is string => !!id),
+	);
+	const compatibleNodeIds = props.kindFilter
+		? []
+		: customModels.value
+				.map((m) => m.providerAlias)
+				.filter(
+					(alias): alias is string =>
+						!!alias &&
+						(isOpenAICompatibleProvider(alias) || isAnthropicCompatibleProvider(alias)) &&
+						existingNodeIds.has(alias) &&
+						!deactivatedProviderIds.value.has(alias),
+				);
 
 	// Only show connected providers (including both standard and custom)
-	const providerIdsToShow = new Set([...activeConnectionIds, ...noAuthIds]);
+	const providerIdsToShow = new Set(
+		[...activeConnectionIds, ...noAuthIds, ...compatibleNodeIds].filter(
+			(id): id is string => !!id && !deactivatedProviderIds.value.has(id),
+		),
+	);
 
 	// Sort by PROVIDER_ORDER
 	const sortedProviderIds = [...providerIdsToShow].sort((a, b) => {
@@ -267,7 +352,7 @@ const groupedModels = computed<Record<string, any>>(() => {
 			// Custom (openai/anthropic-compatible) providers are LLM-only — skip for typed media kinds
 			if (props.kindFilter && TYPED_KINDS.has(props.kindFilter)) continue;
 			// Find connection object to get prefix synchronously without waiting for providerNodes fetch
-			const connection = props.activeProviders.find((p) => p.provider === providerId);
+			const connection = effectiveConnections.value.find((p) => p.provider === providerId);
 			const matchedNode = providerNodes.value.find((node) => node.id === providerId);
 			const displayName = matchedNode?.name || connection?.name || providerInfo.name;
 			const nodePrefix = connection?.providerSpecificData?.prefix || matchedNode?.prefix || providerId;
@@ -387,15 +472,41 @@ const groupedModels = computed<Record<string, any>>(() => {
 		if (group.models.length === 0) delete groups[providerId];
 	}
 
+	// An explicit `enabledModels` list on any active connection narrows the
+	// provider to those ids. Nothing in this build writes the field; it only
+	// fires for a database imported from 9router.
+	for (const [providerId, group] of Object.entries(groups)) {
+		const providerConns = filteredActiveProviders.value.filter((p) => p.provider === providerId);
+		const explicitEnabled: string[] = [];
+		for (const conn of providerConns) {
+			const enabled = conn.providerSpecificData?.enabledModels;
+			if (Array.isArray(enabled) && enabled.length > 0) explicitEnabled.push(...enabled);
+		}
+		if (explicitEnabled.length === 0) continue;
+		const enabledSet = new Set(explicitEnabled);
+		const alias = group.alias || getProviderAlias(providerId) || providerId;
+		group.models = group.models.filter(
+			(m: any) =>
+				enabledSet.has(m.id) ||
+				enabledSet.has(m.value) ||
+				enabledSet.has(`${alias}/${m.id}`) ||
+				(m.value && enabledSet.has(String(m.value).replace(`${alias}/`, ""))),
+		);
+		if (group.models.length === 0) delete groups[providerId];
+	}
+
 	return groups;
 });
+
+// The parsed query drives both sections, so `/regex/`, `!negation` and `-term`
+// behave the same for combos and models.
+const parsedQuery = computed(() => parseSearchQuery(searchQuery.value));
 
 // Filter combos by search query (and hide combos when kindFilter is set — combos are LLM-only)
 const filteredCombos = computed(() => {
 	if (props.kindFilter || props.capFilter) return [];
-	if (!searchQuery.value.trim()) return combos.value;
-	const query = searchQuery.value.toLowerCase();
-	return combos.value.filter((c) => c.name.toLowerCase().includes(query));
+	if (parsedQuery.value.isEmpty) return combos.value;
+	return filterModelsByQuery(combos.value, parsedQuery.value);
 });
 
 // Sort models alphabetically, with added models floated to top
@@ -411,7 +522,7 @@ function sortModels(models: Array<Record<string, any>>) {
 
 // Filter models by search query
 const filteredGroups = computed(() => {
-	const query = searchQuery.value.trim().toLowerCase();
+	const parsed = parsedQuery.value;
 
 	const filtered: Record<string, any> = {};
 	for (const [providerId, group] of Object.entries(groupedModels.value)) {
@@ -423,18 +534,59 @@ const filteredGroups = computed(() => {
 			);
 			if (models.length === 0) continue;
 		}
-		if (query) {
-			const providerNameMatches = group.name.toLowerCase().includes(query);
-			models = models.filter(
-				(m: any) => m.name.toLowerCase().includes(query) || m.id.toLowerCase().includes(query),
-			);
-			if (models.length === 0 && !providerNameMatches) continue;
+		if (!parsed.isEmpty) {
+			// A provider-name hit surfaces that provider's models, but the
+			// negative terms still apply to each model.
+			const providerNameMatches = matchesSearch(group.name, parsed);
+			models = models.filter((m: any) => {
+				if (matchesSearch(m, parsed)) return true;
+				if (!providerNameMatches) return false;
+				return parsed.negativeTerms.length > 0
+					? matchesSearch(m, { ...parsed, positiveTerms: [] })
+					: true;
+			});
+			if (models.length === 0) continue;
 		}
 		filtered[providerId] = { ...group, models: sortModels(models) };
 	}
 
 	return filtered;
 });
+
+// Batch actions operate on what the current search leaves visible.
+const visibleModels = computed<Array<Record<string, any>>>(() => {
+	const out: Array<Record<string, any>> = [];
+	for (const group of Object.values(filteredGroups.value)) {
+		for (const model of group.models as Array<Record<string, any>>) {
+			if (!model.isPlaceholder) out.push(model);
+		}
+	}
+	return out;
+});
+const visibleUnadded = computed(() =>
+	visibleModels.value.filter((m) => !props.addedModelValues.includes(m.value)),
+);
+const visibleAdded = computed(() =>
+	visibleModels.value.filter((m) => props.addedModelValues.includes(m.value)),
+);
+
+function handleSelectAllVisible() {
+	if (visibleUnadded.value.length === 0) return;
+	if (props.closeOnSelect) {
+		for (const model of visibleUnadded.value) emit("select", model);
+		return;
+	}
+	emit("selectBatch", visibleUnadded.value);
+}
+
+function handleDeselectAllVisible() {
+	if (visibleAdded.value.length === 0) return;
+	if (props.closeOnSelect) {
+		for (const model of visibleAdded.value) emit("deselect", model);
+		return;
+	}
+	emit("deselectBatch", visibleAdded.value);
+}
 
 function handleSelect(model: any) {
 	const value = model?.value || model?.name || model;
@@ -459,7 +611,7 @@ function handleClose() {
 </script>
 
 <template>
-  <Modal :is-open="props.isOpen" :title="props.title" size="md" class-name="p-4!" @close="handleClose">
+  <Modal :is-open="props.isOpen" :title="props.title" :size="props.size" class-name="p-4!" @close="handleClose">
     <!-- Info bar -->
     <div class="flex items-center gap-2 mb-3 px-2.5 py-2 bg-primary/8 border border-primary/20 rounded-lg text-xs text-text-muted">
       <span class="material-symbols-outlined text-primary shrink-0" style="font-size: 14px">info</span>
@@ -475,9 +627,57 @@ function handleClose() {
         <input
           v-model="searchQuery"
           type="text"
-          placeholder="Search..."
-          class="w-full pl-8 pr-3 py-1.5 bg-surface border border-border rounded text-xs focus:outline-none focus:ring-1 focus:ring-primary/50"
+          placeholder="Search models or combos. Use !term to exclude, /regex/ for patterns"
+          aria-label="Search models and combos"
+          class="w-full pl-8 pr-20 py-1.5 bg-surface border border-border rounded text-xs focus:outline-none focus:ring-1 focus:ring-primary/50"
         />
+        <div class="absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center gap-1">
+          <span
+            v-if="parsedQuery.isRegex"
+            class="rounded bg-primary/15 px-1 py-0.5 text-[9px] font-medium text-primary"
+            title="Regular expression"
+            >regex</span
+          >
+          <span
+            v-if="parsedQuery.negativeTerms.length > 0 && !parsedQuery.isRegex"
+            class="rounded bg-black/10 px-1 py-0.5 text-[9px] font-medium text-text-muted dark:bg-white/10"
+            title="Excluding terms"
+            >!exclude</span
+          >
+          <button
+            v-if="searchQuery"
+            type="button"
+            aria-label="Clear search"
+            class="flex size-5 items-center justify-center rounded text-text-muted hover:bg-black/5 hover:text-text-main dark:hover:bg-white/10"
+            @click="searchQuery = ''"
+          >
+            <span class="material-symbols-outlined text-[14px]">close</span>
+          </button>
+        </div>
+      </div>
+      <div
+        v-if="!props.closeOnSelect && visibleModels.length > 0"
+        class="mt-1.5 flex items-center justify-between gap-2 text-[11px] text-text-muted"
+      >
+        <span>{{ visibleModels.length }} models</span>
+        <div class="flex items-center gap-1">
+          <button
+            v-if="visibleUnadded.length > 0"
+            type="button"
+            class="rounded border border-border px-1.5 py-0.5 hover:border-primary/50 hover:text-primary"
+            @click="handleSelectAllVisible"
+          >
+            Select All ({{ visibleUnadded.length }})
+          </button>
+          <button
+            v-if="visibleAdded.length > 0"
+            type="button"
+            class="rounded border border-border px-1.5 py-0.5 hover:border-primary/50 hover:text-primary"
+            @click="handleDeselectAllVisible"
+          >
+            Deselect All ({{ visibleAdded.length }})
+          </button>
+        </div>
       </div>
     </div>
 

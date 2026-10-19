@@ -136,7 +136,7 @@ pub fn resolve_connection_proxy_config(
             let pool_type = pool.get("type").and_then(Value::as_str).unwrap_or("");
             let strict_proxy = pool.get("strictProxy").and_then(Value::as_bool) == Some(true);
 
-            if matches!(pool_type, "vercel" | "cloudflare" | "deno") {
+            if matches!(pool_type, "vercel" | "cloudflare" | "deno" | "netlify") {
                 return ResolvedProxyConfig {
                     source: pool_type.to_string(),
                     proxy_pool_id: Some(proxy_pool_id),

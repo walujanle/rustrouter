@@ -343,10 +343,17 @@ pub async fn handle_chat_core(request: ChatCoreRequest<'_>) -> ChatResult {
     // Per-model guard: a declared `supportedFormats` list limits which transport
     // applies, so a Claude-format request cannot route an OpenAI-only model to
     // /messages.
+    //
+    // When the client's format is not in that list, fall back to the transport
+    // for the model's own target format. Without this an OpenAI-wire client
+    // asking for a Claude-only model translates to a Claude body but leaves the
+    // runtime transport unset, and the executor POSTs it to /chat/completions.
     let use_transport = match &model_supported_formats {
         None => runtime_transport,
         Some(formats) if formats.iter().any(|f| f == source_format) => runtime_transport,
-        Some(_) => None,
+        Some(_) => model_target_format
+            .as_deref()
+            .and_then(|target| resolve_transport(provider, target)),
     };
     let creds_value = json!({ "providerSpecificData": credentials.provider_specific_data.clone() });
     let target_format: String = use_transport
@@ -893,7 +900,7 @@ pub async fn handle_chat_core(request: ChatCoreRequest<'_>) -> ChatResult {
                 finish_non_streaming(&result, &hooks, model, provider, connection_id);
                 return result;
             }
-            Err(response) => provider_response = response,
+            Err(response) => provider_response = *response,
         }
     }
 

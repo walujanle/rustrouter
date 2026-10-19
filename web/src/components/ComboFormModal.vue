@@ -120,6 +120,19 @@ function handleDeselectModel(model: any) {
 	models.value = models.value.filter((m) => m !== model.value);
 }
 
+function handleAddModels(selected: any[]) {
+	const next = [...models.value];
+	for (const model of selected) {
+		if (model?.value && !next.includes(model.value)) next.push(model.value);
+	}
+	models.value = next;
+}
+
+function handleDeselectModels(selected: any[]) {
+	const removed = new Set(selected.map((model) => model?.value));
+	models.value = models.value.filter((m) => !removed.has(m));
+}
+
 function handleRemoveModel(i: number) {
 	models.value = models.value.filter((_, idx) => idx !== i);
 }
@@ -297,5 +310,7 @@ const isEdit = !!props.combo;
     @close="showModelSelect = false"
     @select="handleAddModel"
     @deselect="handleDeselectModel"
+    @select-batch="handleAddModels"
+    @deselect-batch="handleDeselectModels"
   />
 </template>

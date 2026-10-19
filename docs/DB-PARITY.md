@@ -1,6 +1,6 @@
 # Database Contract
 
-The schema is declared in `crates/router-db/src/schema.rs`. `SCHEMA_VERSION = 1`. The SQLite file is shared with 9router and the schema is byte-identical: same tables, column order, types, defaults, indexes and PRAGMA set. SQLite only.
+The schema is declared in `crates/router-db/src/schema.rs`. `SCHEMA_VERSION = 2`. The SQLite file is shared with 9router and the schema is byte-identical: same tables, column order, types, defaults, indexes and PRAGMA set. SQLite only.
 
 That identity is the contract. A database can move between the two installs with no migration step, so a row rustrouter does not recognise is left untouched, never rewritten or deleted. `crates/router-db` is the module that owns every rule on this page.
 
@@ -92,7 +92,9 @@ CREATE TABLE IF NOT EXISTS apiKeys (
   name TEXT,
   machineId TEXT,
   isActive INTEGER DEFAULT 1,
-  createdAt TEXT NOT NULL
+  createdAt TEXT NOT NULL,
+  accessRestricted INTEGER DEFAULT 0,
+  accessAllow TEXT
 )
 CREATE INDEX IF NOT EXISTS idx_ak_key ON apiKeys(key)
 
@@ -247,6 +249,15 @@ The boot sequence is `migrate_on_boot` in `crates/router-db/src/migrations.rs`: 
 ## Export / import
 
 `export_db` / `import_db` (`crates/router-db/src/export.rs`) wipes tables except `_meta` and re-inserts. Route-level: password re-auth (`x-9r-password`) or CLI token (`x-9r-cli-token`) on `GET`/`POST /api/settings/database`. `PROTECTED_SETTING_KEYS = ["password", "mitmSudoEncrypted"]`; `GET /api/settings` strips `password` and `oidcClientSecret` and adds `oidcConfigured`, `hasPassword`.
+
+**Per-key access control.** `accessRestricted` / `accessAllow` are the only
+columns added since v1. They are additive, so `sync_schema_from_tables` adds them
+on boot and every existing row reads `accessRestricted = 0` (unrestricted). The
+reference declares the same two columns at `SCHEMA_VERSION = 2` while its
+migration registry still tops out at `m001`, so the additive sync is the only
+actor on both sides; adding a rustrouter migration here would stamp a version
+9router never writes. `export_db` / `import_db` carry the pair, because an
+import that dropped them would silently widen a restricted key.
 
 **What `import_db` actually clears.** The wipe is six tables — `settings`, `providerConnections`, `providerNodes`, `proxyPools`, `apiKeys`, `combos` — plus `kv` rows in the `modelAliases`, `customModels`, `mitmAlias` and `pricing` scopes. `usageHistory`, `usageDaily`, `requestDetails` and the `disabledModels` scope are not touched, and `export_db` never emits them, so the payload carries configuration only and an import replaces configuration while leaving usage and disabled-model state in place. Only a literal JSON `false` in `isActive` deactivates a row on import; `null`, a missing key, `0` and `""` all import as active. `combos.models` goes through `JSON.stringify(models || [])`, so any falsy value becomes `[]`. `export_db` spreads each row's `data` blob first and then overlays the fixed columns, so a column always wins over a same-named key in the blob and the payload's key order is the order the dashboard sees.
 

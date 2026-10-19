@@ -18,11 +18,14 @@ use router_sse::executors::http::tls_builder;
 use router_sse::services::proxy_test::test_proxy_url;
 
 use crate::error::ApiError;
+use crate::services::netlify_relay::{default_project_name, netlify_api_error, netlify_headers};
 use crate::state::AppState;
 
-const VALID_PROXY_TYPES: [&str; 4] = ["http", "vercel", "cloudflare", "deno"];
-/// The update path accepts a narrower set: `deno` is not editable here.
-const VALID_UPDATE_TYPES: [&str; 3] = ["http", "vercel", "cloudflare"];
+const VALID_PROXY_TYPES: [&str; 5] = ["http", "vercel", "cloudflare", "deno", "netlify"];
+/// Both lists must carry every deployable type: the update path silently
+/// rewrites an unknown type to `http`, and the pool row lives in the shared
+/// database, so a missing entry is a persisted corruption rather than a 400.
+const VALID_UPDATE_TYPES: [&str; 5] = ["http", "vercel", "cloudflare", "deno", "netlify"];
 
 /// `toBoolean`: only the literal strings count; anything else is `undefined`.
 fn to_boolean(value: Option<&str>) -> Option<bool> {
@@ -326,7 +329,7 @@ pub async fn test(State(state): State<AppState>, Path(id): Path<String>) -> Resp
 
     let pool_type = pool.get("type").and_then(Value::as_str).unwrap_or("");
     let proxy_url = pool.get("proxyUrl").and_then(Value::as_str).unwrap_or("");
-    let result = if matches!(pool_type, "vercel" | "cloudflare" | "deno") {
+    let result = if matches!(pool_type, "vercel" | "cloudflare" | "deno" | "netlify") {
         test_relay(proxy_url).await
     } else {
         test_proxy_url(Some(proxy_url), None, None).await
@@ -520,26 +523,6 @@ const DENO_RELAY_CODE: &str = r#"Deno.serve(async (request) => {
     });
   }
 });"#;
-
-/// `relay-${Date.now().toString(36)}`.
-fn default_project_name() -> String {
-    let millis = chrono::Utc::now().timestamp_millis().max(0) as u64;
-    format!("relay-{}", to_base36(millis))
-}
-
-fn to_base36(mut n: u64) -> String {
-    const DIGITS: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
-    if n == 0 {
-        return "0".to_string();
-    }
-    let mut out = Vec::new();
-    while n > 0 {
-        out.push(DIGITS[(n % 36) as usize]);
-        n /= 36;
-    }
-    out.reverse();
-    String::from_utf8(out).unwrap_or_default()
-}
 
 /// Pull `error.message` out of a provider error body, falling back to `fallback`.
 fn provider_error(body: &Value, fallback: &str) -> String {
@@ -956,6 +939,226 @@ pub async fn deno_deploy(
     save_deploy(&state, project_name, deploy_url, "deno").await
 }
 
+/// `POST /api/proxy-pools/netlify-deploy`.
+///
+/// Unlike the other three relays this is a digest deploy: Netlify answers the
+/// deploy request with the digests it is missing, and only those are uploaded.
+pub async fn netlify_deploy(
+    State(state): State<AppState>,
+    body: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    use crate::services::netlify_relay::{
+        DeployPoll, NETLIFY_API, NETLIFY_FUNCTION_NAME, build_index_file, build_relay_function_zip,
+        build_relay_url, deploy_poll_decision, sanitize_site_name,
+    };
+
+    let Ok(Json(payload)) = body else {
+        return ApiError::internal("Deploy failed").into_response();
+    };
+    let token = payload
+        .get("netlifyToken")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or("");
+    if token.is_empty() {
+        return ApiError::bad_request("Netlify API token is required").into_response();
+    }
+    let site_name = sanitize_site_name(
+        payload
+            .get("projectName")
+            .or_else(|| payload.get("siteName"))
+            .and_then(Value::as_str),
+    );
+
+    let Ok(client) = tls_builder().timeout(Duration::from_secs(150)).build() else {
+        return ApiError::internal("Deploy failed").into_response();
+    };
+    let auth = netlify_headers(token);
+
+    // 1. Create the site. A taken name is 422 upstream and 409 here.
+    let mut create = client
+        .post(format!("{NETLIFY_API}/sites"))
+        .json(&json!({ "name": site_name }));
+    for (name, value) in &auth {
+        create = create.header(*name, value);
+    }
+    let create = match create.send().await {
+        Ok(r) => r,
+        Err(e) => return ApiError::internal(e.to_string()).into_response(),
+    };
+    if !create.status().is_success() {
+        let status = create.status().as_u16();
+        let err: Value = create.json().await.unwrap_or(json!({}));
+        if status == 422 {
+            let message = crate::services::netlify_relay::netlify_error_message(
+                &err,
+                "Failed to create Netlify site",
+            );
+            return ApiError::new(
+                StatusCode::CONFLICT,
+                format!("{message}. Site name \"{site_name}\" is taken — choose a different name."),
+            )
+            .into_response();
+        }
+        return netlify_api_error(status, &err, "Failed to create Netlify site").into_response();
+    }
+    let site: Value = create.json().await.unwrap_or(json!({}));
+    let site_id = site
+        .get("id")
+        .or_else(|| site.get("site_id"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let site_url = site
+        .get("ssl_url")
+        .or_else(|| site.get("url"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    if site_id.is_empty() || site_url.is_empty() {
+        return ApiError::internal("Netlify site created but no site URL returned").into_response();
+    }
+
+    // Best effort cleanup: a site this request created must not leak when the
+    // deploy fails, matching what the Deno path does with its app.
+    let discard_site = |client: reqwest::Client, site_id: String, token: String| async move {
+        let _ = client
+            .delete(format!("{NETLIFY_API}/sites/{site_id}"))
+            .bearer_auth(token)
+            .send()
+            .await;
+    };
+
+    // 2. Announce the digests. SHA1 for files, SHA256 for functions.
+    let (zip, function_digest) = build_relay_function_zip();
+    let (index_content, index_digest) = build_index_file();
+    let mut deploy_req = client
+        .post(format!("{NETLIFY_API}/sites/{site_id}/deploys"))
+        .json(&json!({
+            "files": { "/index.html": index_digest },
+            "functions": { NETLIFY_FUNCTION_NAME: function_digest },
+        }));
+    for (name, value) in &auth {
+        deploy_req = deploy_req.header(*name, value);
+    }
+    let deploy_res = match deploy_req.send().await {
+        Ok(r) => r,
+        Err(e) => {
+            discard_site(client.clone(), site_id, token.to_string()).await;
+            return ApiError::internal(e.to_string()).into_response();
+        }
+    };
+    if !deploy_res.status().is_success() {
+        let status = deploy_res.status().as_u16();
+        let err: Value = deploy_res.json().await.unwrap_or(json!({}));
+        discard_site(client.clone(), site_id, token.to_string()).await;
+        return netlify_api_error(status, &err, "Failed to create Netlify deploy").into_response();
+    }
+    let deploy: Value = deploy_res.json().await.unwrap_or(json!({}));
+    let deploy_id = deploy
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    if deploy_id.is_empty() {
+        discard_site(client.clone(), site_id, token.to_string()).await;
+        return ApiError::internal("Netlify deploy created but no deploy ID returned")
+            .into_response();
+    }
+
+    let has = |key: &str, digest: &str| {
+        deploy
+            .get(key)
+            .and_then(Value::as_array)
+            .is_some_and(|list| list.iter().any(|v| v.as_str() == Some(digest)))
+    };
+
+    // 3. Upload only the digests Netlify asked for.
+    if has("required", &index_digest) {
+        let res = client
+            .put(format!(
+                "{NETLIFY_API}/deploys/{deploy_id}/files/index.html"
+            ))
+            .bearer_auth(token)
+            .header("Content-Type", "application/octet-stream")
+            .body(index_content.to_vec())
+            .send()
+            .await;
+        match res {
+            Ok(r) if r.status().is_success() => {}
+            Ok(r) => {
+                let status = r.status().as_u16();
+                let err: Value = r.json().await.unwrap_or(json!({}));
+                discard_site(client.clone(), site_id, token.to_string()).await;
+                return netlify_api_error(status, &err, "Failed to upload site file to Netlify")
+                    .into_response();
+            }
+            Err(e) => {
+                discard_site(client.clone(), site_id, token.to_string()).await;
+                return ApiError::internal(e.to_string()).into_response();
+            }
+        }
+    }
+    if has("required_functions", &function_digest) {
+        let res = client
+            .put(format!(
+                "{NETLIFY_API}/deploys/{deploy_id}/functions/{NETLIFY_FUNCTION_NAME}?runtime=js"
+            ))
+            .bearer_auth(token)
+            .header("Content-Type", "application/octet-stream")
+            .body(zip)
+            .send()
+            .await;
+        match res {
+            Ok(r) if r.status().is_success() => {}
+            Ok(r) => {
+                let status = r.status().as_u16();
+                let err: Value = r.json().await.unwrap_or(json!({}));
+                discard_site(client.clone(), site_id, token.to_string()).await;
+                return netlify_api_error(
+                    status,
+                    &err,
+                    "Failed to upload relay function to Netlify",
+                )
+                .into_response();
+            }
+            Err(e) => {
+                discard_site(client.clone(), site_id, token.to_string()).await;
+                return ApiError::internal(e.to_string()).into_response();
+            }
+        }
+    }
+
+    // 4. Poll until live: 3 s apart, 120 s cap.
+    let started = Instant::now();
+    loop {
+        if started.elapsed() > Duration::from_secs(120) {
+            discard_site(client.clone(), site_id, token.to_string()).await;
+            return ApiError::internal("Netlify deploy timed out").into_response();
+        }
+        let poll = client
+            .get(format!("{NETLIFY_API}/deploys/{deploy_id}"))
+            .bearer_auth(token)
+            .send()
+            .await;
+        let Ok(res) = poll else {
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            continue;
+        };
+        let data: Value = res.json().await.unwrap_or(json!({}));
+        match deploy_poll_decision(&data) {
+            DeployPoll::Ready => break,
+            DeployPoll::Failed(message) => {
+                discard_site(client.clone(), site_id, token.to_string()).await;
+                return ApiError::internal(message).into_response();
+            }
+            DeployPoll::Pending => tokio::time::sleep(Duration::from_secs(3)).await,
+        }
+    }
+
+    save_deploy(&state, site_name, build_relay_url(&site_url), "netlify").await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -982,11 +1185,20 @@ mod tests {
         assert_eq!(map.len(), 1);
     }
 
+    /// Both type lists gate a shared-database write, so a missing entry turns a
+    /// valid deploy into a silent `http` rewrite.
     #[test]
-    fn base36_matches_js_number_tostring() {
-        assert_eq!(to_base36(0), "0");
-        assert_eq!(to_base36(35), "z");
-        assert_eq!(to_base36(36), "10");
+    fn every_deployable_type_is_editable() {
+        for pool_type in ["vercel", "cloudflare", "deno", "netlify"] {
+            assert!(
+                VALID_PROXY_TYPES.contains(&pool_type),
+                "{pool_type} not creatable"
+            );
+            assert!(
+                VALID_UPDATE_TYPES.contains(&pool_type),
+                "{pool_type} not editable"
+            );
+        }
     }
 
     /// A relay response whose copied framing contradicts its body is what the

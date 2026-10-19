@@ -16,7 +16,7 @@ const props = defineProps<{
 const emit = defineEmits<{ success: []; close: [] }>();
 
 // Providers on the device-code flow (must match the backend's flowType table).
-const DEVICE_CODE_PROVIDERS = ["kilocode", "codebuddy-intl", "grok-cli"];
+const DEVICE_CODE_PROVIDERS = ["kilocode", "codebuddy-intl", "grok-cli", "nous"];
 
 const step = ref<"waiting" | "input" | "success" | "error">("waiting");
 const authData = ref<Record<string, any> | null>(null);

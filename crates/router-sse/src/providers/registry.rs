@@ -285,9 +285,24 @@ mod tests {
     #[test]
     fn parses_the_generated_file() {
         let r = registry();
-        assert_eq!(r.entries().len(), 24);
+        assert_eq!(r.entries().len(), 25);
         assert!(r.get("deepseek").is_some());
         assert!(r.get("openrouter").is_some());
+        assert!(r.get("nous").is_some());
+    }
+
+    #[test]
+    fn nous_aliases_and_models_resolve() {
+        let r = registry();
+        assert_eq!(r.resolve_alias("ns"), "nous");
+        assert_eq!(r.resolve_alias("nous-portal"), "nous");
+        assert_eq!(r.resolve_alias("nous-research"), "nous");
+        assert_eq!(r.models_for("nous").len(), 8);
+        assert_eq!(
+            r.transport("nous").and_then(|t| t.base_url.as_deref()),
+            Some("https://inference-api.nousresearch.com/v1/chat/completions")
+        );
+        assert!(r.oauth("nous").is_some(), "device-code config missing");
     }
 
     #[test]

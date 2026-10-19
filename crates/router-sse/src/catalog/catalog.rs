@@ -868,12 +868,34 @@ mod tests {
 
     #[test]
     fn catalog_parses_with_the_expected_shape() {
-        assert_eq!(CATALOG.model_capabilities.len(), 38);
-        assert_eq!(CATALOG.pattern_capabilities.len(), 100);
+        assert_eq!(CATALOG.model_capabilities.len(), 49);
+        assert_eq!(CATALOG.pattern_capabilities.len(), 101);
         // `qoder-cn` left with the provider; the dump filters the
         // provider-keyed tables against the kept id set.
         assert!(!CATALOG.provider_capabilities.contains_key("qoder-cn"));
         assert!(!CATALOG.provider_capabilities.contains_key("commandcode"));
+    }
+
+    #[test]
+    fn nous_provider_capabilities_beat_the_shared_patterns() {
+        // The shared `*laguna-s-2.1*free*` pattern says a 200k window and the
+        // `openai` thinking format; the Nous provider block has to win.
+        let caps = get_capabilities_for_model(Some("nous"), "poolside/laguna-s-2.1:free");
+        assert_eq!(caps.thinking_format.as_deref(), Some("nous"));
+        assert_eq!(caps.context_window, 262_144);
+        // A step model would otherwise take the `step` thinking format.
+        let caps = get_capabilities_for_model(Some("nous"), "stepfun/step-5-preview:free");
+        assert_eq!(caps.thinking_format.as_deref(), Some("nous"));
+        assert!(caps.vision);
+    }
+
+    #[test]
+    fn claude_models_report_pdf_input() {
+        assert!(get_capabilities_for_model(None, "claude-sonnet-5").pdf);
+        assert!(get_capabilities_for_model(None, "claude-opus-4.8").pdf);
+        // An id that is not in the table still hits the family pattern.
+        assert!(get_capabilities_for_model(None, "claude-sonnet-5-5").pdf);
+        assert!(!get_capabilities_for_model(None, "gpt-5.6-terra").pdf);
     }
 
     #[test]

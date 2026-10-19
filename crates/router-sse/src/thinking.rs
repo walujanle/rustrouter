@@ -635,6 +635,25 @@ fn apply_format(
                 obj.insert("reasoning_effort".into(), json!(effort));
             }
         }
+        "nous" => {
+            // Nous takes a nested `reasoning` object, not a top-level
+            // `reasoning_effort`. Disabled means the key is absent entirely.
+            if none && can_disable {
+                return;
+            }
+            // `to_level(Auto)` yields "auto", which Nous does not accept; the
+            // reference sends "medium" for an unspecified effort.
+            let level = match &eff {
+                ThinkingMode::Auto => Some("medium".to_string()),
+                other => to_level(other),
+            };
+            let mut reasoning = Map::new();
+            reasoning.insert("enabled".into(), json!(true));
+            if let Some(level) = level {
+                reasoning.insert("effort".into(), json!(level));
+            }
+            obj.insert("reasoning".into(), Value::Object(reasoning));
+        }
         "commandcode" => {
             // The native CLI sends reasoning_effort inside params of the
             // /alpha/generate envelope.
@@ -1011,6 +1030,50 @@ mod tests {
             Some(&ThinkingMode::Level("high".into())),
         );
         assert_eq!(body["params"]["reasoning_effort"], json!("high"));
+    }
+
+    #[test]
+    fn nous_thinking_is_a_nested_reasoning_object() {
+        let mut body = json!({});
+        apply_thinking(
+            "openai",
+            "poolside/laguna-xs-2.1:free",
+            &mut body,
+            Some("nous"),
+            Some(&ThinkingMode::Level("high".into())),
+        );
+        assert_eq!(
+            body["reasoning"],
+            json!({"enabled": true, "effort": "high"})
+        );
+        assert!(body.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn nous_auto_maps_to_medium_not_auto() {
+        let mut body = json!({});
+        apply_thinking(
+            "openai",
+            "poolside/laguna-xs-2.1:free",
+            &mut body,
+            Some("nous"),
+            Some(&ThinkingMode::Auto),
+        );
+        assert_eq!(body["reasoning"]["effort"], json!("medium"));
+    }
+
+    #[test]
+    fn nous_disabled_omits_the_reasoning_key() {
+        let mut body = json!({"reasoning": {"enabled": true, "effort": "high"}});
+        apply_thinking(
+            "openai",
+            "poolside/laguna-xs-2.1:free",
+            &mut body,
+            Some("nous"),
+            Some(&ThinkingMode::None),
+        );
+        assert!(body.get("reasoning").is_none());
+        assert!(body.get("reasoning_effort").is_none());
     }
 
     #[test]

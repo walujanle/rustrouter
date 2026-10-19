@@ -302,6 +302,71 @@ async fn refresh_codebuddy_intl(
     .await
 }
 
+/// `refreshNousToken`: the refresh token rides in the body **and** in the
+/// `x-nous-refresh-token` header, and a fresh agent key is minted afterwards.
+async fn refresh_nous(
+    refresh_token: &str,
+    proxy_options: &ProxyOptions,
+) -> Option<RefreshedCredentials> {
+    let oauth = registry().oauth("nous")?;
+    let url = oauth.get("tokenUrl").and_then(Value::as_str)?;
+    let client_id = oauth
+        .get("clientId")
+        .and_then(Value::as_str)
+        .unwrap_or("hermes-cli")
+        .to_string();
+    let cfg = oauth.clone();
+
+    dedup_refresh("nous", refresh_token, || async {
+        let params = vec![
+            ("grant_type".to_string(), "refresh_token".to_string()),
+            ("refresh_token".to_string(), refresh_token.to_string()),
+            ("client_id".to_string(), client_id.clone()),
+        ];
+        let headers = [("x-nous-refresh-token", refresh_token.to_string())];
+        let tokens = post_form(url, &params, &headers, proxy_options).await?;
+        let access_token = tokens
+            .get("access_token")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())?
+            .to_string();
+
+        // Best effort: a failed mint falls back to the access token, exactly
+        // like the login path.
+        let agent = crate::services::oauth_flow::mint_nous_agent_key(&cfg, &access_token).await;
+        let mut psd = Map::new();
+        if let Some(agent) = &agent {
+            if let Some(key_id) = &agent.key_id {
+                psd.insert("agentKeyId".into(), json!(key_id));
+            }
+            if let Some(expires_at) = &agent.expires_at {
+                psd.insert("agentKeyExpiresAt".into(), json!(expires_at));
+            }
+        }
+
+        Some(RefreshedCredentials {
+            access_token: Some(access_token.clone()),
+            api_key: Some(
+                agent
+                    .map(|a| a.api_key)
+                    .unwrap_or_else(|| access_token.clone()),
+            ),
+            refresh_token: Some(
+                tokens
+                    .get("refresh_token")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(refresh_token)
+                    .to_string(),
+            ),
+            expires_in: tokens.get("expires_in").and_then(Value::as_i64),
+            provider_specific_data: if psd.is_empty() { None } else { Some(psd) },
+            ..Default::default()
+        })
+    })
+    .await
+}
+
 /// `refreshTokenByProvider(provider, credentials)`.
 ///
 /// Providers with no entry here have no refresh token to rotate: `kilocode` is
@@ -319,6 +384,7 @@ pub async fn refresh_token_by_provider(
         "codex" => refresh_codex(refresh_token, proxy_options).await,
         "grok-cli" | "gcli" => refresh_xai(refresh_token, "grok-cli", proxy_options).await,
         "codebuddy-intl" => refresh_codebuddy_intl(refresh_token, proxy_options).await,
+        "nous" => refresh_nous(refresh_token, proxy_options).await,
         _ => None,
     }
 }
@@ -379,6 +445,11 @@ pub fn apply_refresh_patch(credentials: &mut Credentials, patch: &Value) {
     }
     if let Some(v) = string("refreshToken") {
         credentials.refresh_token = Some(v);
+    }
+    // Nous mints a short-lived agent key on every refresh; without this arm the
+    // in-request retry keeps sending the key the upstream just rotated away.
+    if let Some(v) = string("apiKey") {
+        credentials.api_key = Some(v);
     }
     if let Some(v) = string("idToken") {
         credentials.id_token = Some(v);
@@ -487,6 +558,11 @@ pub fn update_provider_credentials(db: &Db, connection_id: &str, new_credentials
     }
     if let Some(v) = truthy_str("refreshToken") {
         updates.insert("refreshToken".into(), json!(v));
+    }
+    // A rotated agent key has to reach the row, or the next request reads the
+    // stale one back out of the database.
+    if let Some(v) = truthy_str("apiKey") {
+        updates.insert("apiKey".into(), json!(v));
     }
     if let Some(v) = truthy_str("idToken") {
         updates.insert("idToken".into(), json!(v));

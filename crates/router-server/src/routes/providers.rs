@@ -1209,7 +1209,61 @@ async fn custom_resolver(
         // `buildOAuthResolver` has no static fallback: an empty live list comes
         // back as `models: []` plus a warning, never a silent zero list.
         "codex" => Some(codex_live_models(state, connection).await),
+        "nous" => Some(nous_live_models(state, connection).await),
         _ => None,
+    }
+}
+
+/// `resolveNousModels`: the live catalogue, prefixed with `nous/` so a model id
+/// cannot resolve to another provider. Falls back to the static eight with a
+/// warning rather than blanking the picker.
+async fn nous_live_models(state: &AppState, connection: &Value) -> ResolverOutcome {
+    let token = conn_str(connection, "apiKey")
+        .filter(|s| !s.is_empty())
+        .or_else(|| conn_str(connection, "accessToken").filter(|s| !s.is_empty()));
+    let Some(token) = token else {
+        return ResolverOutcome::Models(
+            static_provider_models("nous"),
+            Some("No Nous credential found; using static catalog.".into()),
+        );
+    };
+    let Some(client) = probe_client() else {
+        return ResolverOutcome::Models(static_provider_models("nous"), None);
+    };
+    let _ = state;
+    let response = client
+        .get(router_sse::services::nous::NOUS_MODELS_URL)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json")
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await;
+    match response {
+        Ok(res) if res.status().is_success() => {
+            let data: Value = res.json().await.unwrap_or(Value::Null);
+            let models = router_sse::services::nous::prefix_model_ids(
+                router_sse::services::nous::normalize_models(&data),
+            );
+            if models.is_empty() {
+                ResolverOutcome::Models(
+                    static_provider_models("nous"),
+                    Some("Nous returned no live models; using static catalog.".into()),
+                )
+            } else {
+                ResolverOutcome::Models(models, None)
+            }
+        }
+        Ok(res) => ResolverOutcome::Models(
+            static_provider_models("nous"),
+            Some(format!(
+                "Failed to fetch Nous models: {}; using static catalog.",
+                res.status().as_u16()
+            )),
+        ),
+        Err(_) => ResolverOutcome::Models(
+            static_provider_models("nous"),
+            Some("Failed to fetch Nous models; using static catalog.".into()),
+        ),
     }
 }
 
@@ -1884,6 +1938,8 @@ struct OauthTestConfig {
     refreshable: bool,
     check_expiry: bool,
     no_auth: bool,
+    /// Probe with `apiKey` (the agent key) instead of `accessToken`.
+    use_api_key: bool,
 }
 
 fn oauth_test_config(provider: &str) -> Option<OauthTestConfig> {
@@ -1933,6 +1989,7 @@ fn oauth_test_config(provider: &str) -> Option<OauthTestConfig> {
         refreshable,
         check_expiry: false,
         no_auth: false,
+        use_api_key: false,
     };
 
     Some(match provider {
@@ -1966,6 +2023,19 @@ fn oauth_test_config(provider: &str) -> Option<OauthTestConfig> {
                 ..plain(Some(grok_user_url), "GET", true)
             }
         }
+        "nous" => OauthTestConfig {
+            extra_headers: vec![("Content-Type".into(), "application/json".into())],
+            body: Some(router_sse::services::nous::validation_body()),
+            // Nous /models is public, so only an inference call proves the key.
+            // A 4xx here is a real rejection, not a soft signal.
+            accept_statuses: Vec::new(),
+            use_api_key: true,
+            ..plain(
+                Some(router_sse::services::nous::NOUS_CHAT_COMPLETIONS_URL.into()),
+                "POST",
+                true,
+            )
+        },
         _ => return None,
     })
 }
@@ -2026,6 +2096,11 @@ async fn test_oauth_connection(
     else {
         return ProbeResult::invalid("No access token");
     };
+    if config.use_api_key
+        && let Some(key) = conn_str(connection, "apiKey").filter(|s| !s.is_empty())
+    {
+        access_token = key.to_string();
+    }
     let refresh_token = conn_str(connection, "refreshToken").unwrap_or("");
 
     let mut refreshed = false;
@@ -2039,6 +2114,11 @@ async fn test_oauth_connection(
             Some(tokens) => {
                 if let Some(token) = tokens.get("accessToken").and_then(Value::as_str) {
                     access_token = token.to_string();
+                }
+                if config.use_api_key
+                    && let Some(key) = tokens.get("apiKey").and_then(Value::as_str)
+                {
+                    access_token = key.to_string();
                 }
                 refreshed = true;
                 new_tokens = Some(tokens);
@@ -2251,6 +2331,25 @@ async fn test_api_key_connection(connection: &Value, proxy: &ProxyOptions) -> Pr
                 None => ProbeResult::invalid("Network error"),
             }
         }
+        "nous" => {
+            let headers = vec![
+                ("Content-Type".into(), "application/json".into()),
+                ("Authorization".into(), format!("Bearer {api_key}")),
+            ];
+            match post(
+                router_sse::services::nous::NOUS_CHAT_COMPLETIONS_URL.into(),
+                headers,
+                router_sse::services::nous::validation_body(),
+            )
+            .await
+            {
+                Some(s) if router_sse::services::nous::is_api_key_accepted(s) => ProbeResult::ok(),
+                Some(s) => {
+                    ProbeResult::invalid(router_sse::services::nous::api_key_validation_error(s))
+                }
+                None => ProbeResult::invalid("Network error"),
+            }
+        }
         _ => ProbeResult::invalid("Provider test not supported"),
     }
 }
@@ -2361,7 +2460,15 @@ async fn test_single_connection(state: &AppState, id: &str) -> TestOutcome {
     if result.refreshed
         && let Some(tokens) = &result.new_tokens
     {
-        for key in ["accessToken", "refreshToken", "idToken", "lastRefreshAt"] {
+        // `apiKey` is in the list because Nous rotates an agent key on every
+        // refresh; dropping it leaves the row on a key the upstream retired.
+        for key in [
+            "accessToken",
+            "refreshToken",
+            "idToken",
+            "apiKey",
+            "lastRefreshAt",
+        ] {
             if let Some(value) = tokens.get(key).filter(|v| js_truthy(v)) {
                 update.insert(key.to_string(), value.clone());
             }
@@ -2758,6 +2865,36 @@ pub async fn validate(
                 Some(s) if s != 401 && s != 403
             );
             Json(valid_body(valid)).into_response()
+        }
+        "nous" => {
+            // `/v1/models` is public on Nous, so the generic probe would accept
+            // any Bearer value. Only a 2xx inference call proves the key.
+            let headers = vec![
+                ("Content-Type".to_string(), "application/json".to_string()),
+                ("Authorization".to_string(), format!("Bearer {api_key}")),
+            ];
+            let status = plain_probe(
+                router_sse::services::nous::NOUS_CHAT_COMPLETIONS_URL,
+                "POST",
+                &headers,
+                Some(router_sse::services::nous::validation_body()),
+            )
+            .await;
+            match status {
+                Some(s) if router_sse::services::nous::is_api_key_accepted(s) => {
+                    Json(json!({ "valid": true, "error": Value::Null })).into_response()
+                }
+                Some(s) => Json(json!({
+                    "valid": false,
+                    "error": router_sse::services::nous::api_key_validation_error(s),
+                }))
+                .into_response(),
+                None => Json(json!({
+                    "valid": false,
+                    "error": "Unable to verify API key",
+                }))
+                .into_response(),
+            }
         }
         _ => {
             // Generic probe for OpenAI-format providers (config-driven from the

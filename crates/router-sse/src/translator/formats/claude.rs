@@ -724,6 +724,17 @@ pub struct PrepareClaudeArgs<'a> {
 pub fn prepare_claude_request(body: &mut Value, args: &PrepareClaudeArgs<'_>) {
     let provider = args.provider;
 
+    // Claude Code puts a `context_management` block in every request. Only
+    // Anthropic accepts it; a gateway fronting another engine answers 400
+    // "context_management: Extra inputs are not permitted". A same-format
+    // claude→claude request skips body rebuilding, so the field would otherwise
+    // ride through to every non-Anthropic provider on the Claude transport.
+    let anthropic_serving = provider == Some("claude")
+        || provider.is_some_and(|p| p.starts_with("anthropic-compatible"));
+    if !anthropic_serving && let Some(obj) = body.as_object_mut() {
+        obj.shift_remove("context_management");
+    }
+
     // quirk: MiniMax's Claude-compatible endpoint rejects output_config.
     if transport_quirk_truthy(provider, "dropOutputConfig") {
         body.as_object_mut().unwrap().shift_remove("output_config");
@@ -858,6 +869,17 @@ pub fn prepare_claude_request(body: &mut Value, args: &PrepareClaudeArgs<'_>) {
                         t == claude_block::THINKING || t == claude_block::REDACTED_THINKING;
                     if is_thinking {
                         let mut block = block;
+                        // An empty thinking block is rejected outright by the
+                        // Messages API ("each thinking block must contain
+                        // non-whitespace thinking"), and a signature does not
+                        // save it.
+                        if block
+                            .get("thinking")
+                            .and_then(Value::as_str)
+                            .is_none_or(|t| t.trim().is_empty())
+                        {
+                            continue;
+                        }
                         if is_deepseek {
                             has_kept_thinking = true;
                             kept.push(block);
@@ -1271,6 +1293,54 @@ mod tests {
         // set, so no kept provider drops it.
         assert!(body.get("output_config").is_some());
         assert!(body["max_tokens"].as_i64().unwrap() <= 64_000);
+    }
+
+    #[test]
+    fn prepare_drops_context_management_for_non_anthropic_providers() {
+        let mut body = json!({"model": "m", "context_management": {"edits": []}});
+        prepare_claude_request(
+            &mut body,
+            &PrepareClaudeArgs {
+                provider: Some("opencode-go"),
+                ..Default::default()
+            },
+        );
+        assert!(body.get("context_management").is_none());
+
+        // Anthropic itself keeps it.
+        let mut body = json!({"model": "m", "context_management": {"edits": []}});
+        prepare_claude_request(
+            &mut body,
+            &PrepareClaudeArgs {
+                provider: Some("claude"),
+                ..Default::default()
+            },
+        );
+        assert!(body.get("context_management").is_some());
+    }
+
+    #[test]
+    fn prepare_drops_blank_thinking_blocks() {
+        let mut body = json!({
+            "model": "m",
+            "messages": [
+                {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+                {"role": "assistant", "content": [
+                    {"type": "thinking", "thinking": "   ", "signature": "sig"},
+                    {"type": "text", "text": "ok"},
+                ]},
+            ],
+        });
+        prepare_claude_request(
+            &mut body,
+            &PrepareClaudeArgs {
+                provider: Some("deepseek"),
+                ..Default::default()
+            },
+        );
+        let blocks = body["messages"][1]["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["type"], json!("text"));
     }
 
     #[test]

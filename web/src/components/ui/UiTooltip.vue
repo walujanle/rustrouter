@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
 
 const props = withDefaults(
 	defineProps<{
@@ -10,15 +10,56 @@ const props = withDefaults(
 	{ position: "top" },
 );
 
-const posClass = computed(
-	() =>
-		({
-			top: "bottom-full left-1/2 -translate-x-1/2 mb-1.5",
-			bottom: "top-full left-1/2 -translate-x-1/2 mt-1.5",
-			left: "right-full top-1/2 -translate-y-1/2 mr-1.5",
-			right: "left-full top-1/2 -translate-y-1/2 ml-1.5",
-		})[props.position],
-);
+/**
+ * The bubble is teleported to `body` and positioned with `position: fixed`.
+ * Rendering it inside the wrapper made every scroll container with
+ * `overflow-y-auto` clip it, which is what `ConnectionsCard` does.
+ */
+const anchor = ref<HTMLElement | null>(null);
+const visible = ref(false);
+const coords = ref({ top: 0, left: 0 });
+
+function place() {
+	const el = anchor.value;
+	if (!el) return;
+	const rect = el.getBoundingClientRect();
+	const gap = 6;
+	switch (props.position) {
+		case "bottom":
+			coords.value = { top: rect.bottom + gap, left: rect.left + rect.width / 2 };
+			break;
+		case "left":
+			coords.value = { top: rect.top + rect.height / 2, left: rect.left - gap };
+			break;
+		case "right":
+			coords.value = { top: rect.top + rect.height / 2, left: rect.right + gap };
+			break;
+		default:
+			coords.value = { top: rect.top - gap, left: rect.left + rect.width / 2 };
+	}
+}
+
+function show() {
+	place();
+	visible.value = true;
+}
+
+function hide() {
+	visible.value = false;
+}
+
+const transform = computed(() => {
+	switch (props.position) {
+		case "bottom":
+			return "translate(-50%, 0)";
+		case "left":
+			return "translate(-100%, -50%)";
+		case "right":
+			return "translate(0, -50%)";
+		default:
+			return "translate(-50%, -100%)";
+	}
+});
 
 const bgStyle = computed(() => (props.color ? { backgroundColor: props.color } : {}));
 const bgClass = computed(() => (props.color ? "" : "bg-gray-900"));
@@ -26,15 +67,33 @@ const bgClass = computed(() => (props.color ? "" : "bg-gray-900"));
 
 <template>
   <!-- `focus-within` reveals the tooltip when the wrapped control is focused,
-       so it is reachable by keyboard and not hover-only. -->
-  <div class="relative inline-flex group/tt">
+       so it is reachable by keyboard and not hover-only. The wrapper only
+       observes pointer and focus events from the interactive control in its
+       slot; it is not itself a control. -->
+  <!-- biome-ignore lint/a11y/noStaticElementInteractions: the slot owns the interactive control. -->
+  <div
+    ref="anchor"
+    class="relative inline-flex"
+    @mouseenter="show"
+    @mouseleave="hide"
+    @focusin="show"
+    @focusout="hide"
+  >
     <slot />
+  </div>
+  <Teleport to="body">
     <div
+      v-if="visible"
       role="tooltip"
-      :class="`pointer-events-none absolute ${posClass} z-50 w-max max-w-56 rounded px-2 py-1 text-[11px] leading-snug ${bgClass} text-white opacity-0 group-hover/tt:opacity-100 group-focus-within/tt:opacity-100 transition-opacity duration-150 whitespace-normal`"
-      :style="bgStyle"
+      :class="`pointer-events-none fixed z-[60] w-max max-w-56 rounded px-2 py-1 text-[11px] leading-snug ${bgClass} text-white whitespace-normal shadow-lg`"
+      :style="{
+        top: `${coords.top}px`,
+        left: `${coords.left}px`,
+        transform,
+        ...bgStyle,
+      }"
     >
       {{ props.text }}
     </div>
-  </div>
+  </Teleport>
 </template>

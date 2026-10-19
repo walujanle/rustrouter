@@ -176,7 +176,7 @@ const PING_CONFIGS: [PingConfig; 1] = [PingConfig {
     reset_at_drift_ms: 30_000,
     min_ping_interval_ms: 600_000,
     skip_when_blocking_quota_exhausted: true,
-    ping_model: "gpt-5.5",
+    ping_model: "gpt-5.6-terra",
     ping_text: "hi",
     ping_instructions: Some("Reply with OK."),
     ping_reasoning_effort: Some("none"),

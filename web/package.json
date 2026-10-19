@@ -6,7 +6,8 @@
 	"scripts": {
 		"dev": "vite",
 		"build": "vue-tsc -b && biome check && vite build",
-		"preview": "vite preview"
+		"preview": "vite preview",
+		"test": "node --test test/*.test.ts"
 	},
 	"dependencies": {
 		"@guolao/vue-monaco-editor": "^1.6.0",

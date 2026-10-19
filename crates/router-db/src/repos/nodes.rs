@@ -158,6 +158,12 @@ pub fn delete_provider_node(conn: &Connection, id: &str) -> DbResult<Option<Valu
         return Ok(None);
     };
     conn.execute("DELETE FROM providerNodes WHERE id = ?", [id])?;
+    // Custom models live in the shared `kv` store under `<node id>|<model id>`.
+    // Leaving them behind keeps deleted nodes visible in the model picker.
+    conn.execute(
+        "DELETE FROM kv WHERE scope = 'customModels' AND key LIKE ?",
+        [format!("{id}|%")],
+    )?;
     Ok(Some(removed))
 }
 
@@ -168,6 +174,8 @@ mod tests {
     fn db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(&crate::schema::create_table_sql("providerNodes").unwrap())
+            .unwrap();
+        conn.execute_batch(&crate::schema::create_table_sql("kv").unwrap())
             .unwrap();
         conn
     }
@@ -220,6 +228,34 @@ mod tests {
         assert_eq!(removed["id"], json!("x"));
         assert!(get_provider_node_by_id(&conn, "x").unwrap().is_none());
         assert!(delete_provider_node(&conn, "x").unwrap().is_none());
+    }
+
+    #[test]
+    fn delete_prunes_the_nodes_custom_models() {
+        let conn = db();
+        create_provider_node(&conn, &json!({ "id": "x", "type": "t", "name": "n" })).unwrap();
+        for (key, keep) in [("x|m1", false), ("x|m2", false), ("y|m1", true)] {
+            conn.execute(
+                "INSERT INTO kv(scope, key, value) VALUES('customModels', ?, '{}')",
+                [key],
+            )
+            .unwrap();
+            if keep {
+                assert!(
+                    conn.query_row("SELECT 1 FROM kv WHERE key = ?", [key], |_| Ok(()))
+                        .is_ok()
+                );
+            }
+        }
+        delete_provider_node(&conn, "x").unwrap();
+        let keys: Vec<String> = conn
+            .prepare("SELECT key FROM kv ORDER BY key")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(keys, vec!["y|m1"]);
     }
 
     #[test]

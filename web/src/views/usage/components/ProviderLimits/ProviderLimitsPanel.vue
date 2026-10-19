@@ -50,7 +50,7 @@ const AUTO_PING_SETTINGS_KEYS: Record<string, string> = {
 
 const AUTO_PING_TOOLTIPS: Record<string, string> = {
 	codex:
-		"Auto-starts the next 5h Codex window after reset by sending a tiny gpt-5.5 request. Consumes a small amount of quota.",
+		"Auto-starts the next 5h Codex window after reset by sending a tiny gpt-5.6-terra request. Consumes a small amount of quota.",
 };
 
 function getConnectionSecondaryLabel(connection: Connection) {

@@ -17,6 +17,7 @@ pub mod connection_proxy;
 pub mod model;
 pub mod model_catalog;
 pub mod model_catalog_sync;
+pub mod nous;
 pub mod oauth_flow;
 pub mod ping;
 pub mod proxy_test;

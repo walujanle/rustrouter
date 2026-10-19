@@ -29,6 +29,31 @@ fn format_model(model: &Value) -> String {
     model.to_string()
 }
 
+/// `comboModelId`: the string a combo stores for one model.
+///
+/// The runtime filters `models` with `as_str()`, so pushing the model object
+/// itself (as this menu used to) silently drops every entry.
+fn combo_model_id(model: &Value) -> Option<String> {
+    if let Some(s) = model.as_str() {
+        return Some(s.to_string()).filter(|s| !s.is_empty());
+    }
+    let obj = model.as_object()?;
+    if let Some(full) = obj
+        .get("fullModel")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
+        return Some(full.to_string());
+    }
+    match (
+        obj.get("provider").and_then(Value::as_str),
+        obj.get("model").and_then(Value::as_str),
+    ) {
+        (Some(provider), Some(model)) => Some(format!("{provider}/{model}")),
+        _ => None,
+    }
+}
+
 fn models_chain(combo: &Value) -> String {
     combo
         .get("models")
@@ -159,7 +184,7 @@ fn handle_create_combo(ctx: &Ctx) {
         format!("{provider}/{model}")
     };
 
-    let mut selected: Vec<Value> = Vec::new();
+    let mut selected: Vec<String> = Vec::new();
     println!();
     term::show_status("Select models for the chain (minimum 2)", StatusKind::Info);
 
@@ -171,7 +196,7 @@ fn handle_create_combo(ctx: &Ctx) {
             println!("  (none)");
         } else {
             for (i, m) in selected.iter().enumerate() {
-                println!("  {}. {}", i + 1, label(m));
+                println!("  {}. {m}", i + 1);
             }
         }
         println!();
@@ -202,7 +227,17 @@ fn handle_create_combo(ctx: &Ctx) {
         }
         match input.trim().parse::<usize>() {
             Ok(num) if num >= 1 && num <= available.len() => {
-                selected.push(available[num - 1].clone());
+                let Some(id) = combo_model_id(&available[num - 1]) else {
+                    term::show_status("That model has no usable id", StatusKind::Error);
+                    term::pause("Press Enter to continue...");
+                    continue;
+                };
+                if selected.contains(&id) {
+                    term::show_status("That model is already in the chain", StatusKind::Warning);
+                    term::pause("Press Enter to continue...");
+                    continue;
+                }
+                selected.push(id);
             }
             _ => {
                 term::show_status("Invalid model number", StatusKind::Error);
@@ -304,5 +339,31 @@ fn handle_delete_single_combo(ctx: &Ctx, combo: &Value) {
             );
         }
         term::pause("Press Enter to continue...");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn combo_model_id_mirrors_the_reference_helper() {
+        assert_eq!(
+            combo_model_id(&json!("cx/gpt-5.6-terra")).as_deref(),
+            Some("cx/gpt-5.6-terra")
+        );
+        assert_eq!(
+            combo_model_id(&json!({"fullModel": "nous/poolside/laguna-s-2.1:free"})).as_deref(),
+            Some("nous/poolside/laguna-s-2.1:free")
+        );
+        assert_eq!(
+            combo_model_id(&json!({"provider": "cx", "model": "gpt-5.6-terra"})).as_deref(),
+            Some("cx/gpt-5.6-terra")
+        );
+        // The shape the model list actually returns has neither, so it is not
+        // silently stored as a JSON blob.
+        assert_eq!(combo_model_id(&json!({"id": "x"})), None);
+        assert_eq!(combo_model_id(&json!({"provider": "cx"})), None);
+        assert_eq!(combo_model_id(&json!("")), None);
     }
 }

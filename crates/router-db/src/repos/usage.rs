@@ -573,7 +573,11 @@ pub fn get_usage_stats(conn: &Connection, period: &str, ctx: &StatsContext<'_>) 
                     let raw_model = ak.get("rawModel").and_then(Value::as_str).unwrap_or("");
                     let provider = ak.get("provider").and_then(Value::as_str).unwrap_or("");
                     let display = display_provider(ctx.provider_node_name_map, provider);
-                    let api_key_val = ak.get("apiKey").and_then(Value::as_str);
+                    let api_key_val = ak
+                        .get("apiKey")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty());
                     // `keyInfo?.name || (apiKeyVal ? … : "Local (No API Key)")`
                     let key_name = api_key_val
                         .and_then(|v| ctx.api_key_map.get(v))
@@ -657,7 +661,7 @@ pub fn get_usage_stats(conn: &Connection, period: &str, ctx: &StatsContext<'_>) 
         };
 
         let mut stmt = conn.prepare(
-            "SELECT timestamp, provider, model, connectionId, apiKey, endpoint, cost, tokens FROM usageHistory WHERE timestamp >= ?",
+            "SELECT timestamp, provider, model, connectionId, apiKey, endpoint, cost, tokens, promptTokens, completionTokens FROM usageHistory WHERE timestamp >= ?",
         )?;
         let rows: Vec<Value> = stmt
             .query_map([&cutoff], |r| {
@@ -671,6 +675,8 @@ pub fn get_usage_stats(conn: &Connection, period: &str, ctx: &StatsContext<'_>) 
                     "endpoint": r.get::<_, Option<String>>("endpoint")?,
                     "cost": r.get::<_, Option<f64>>("cost")?,
                     "tokens": parse_json_opt(tokens.as_deref(), json!({})),
+                    "promptTokens": r.get::<_, Option<i64>>("promptTokens")?,
+                    "completionTokens": r.get::<_, Option<i64>>("completionTokens")?,
                 }))
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -678,17 +684,23 @@ pub fn get_usage_stats(conn: &Connection, period: &str, ctx: &StatsContext<'_>) 
 
         for r in &rows {
             let tokens = r.get("tokens").cloned().unwrap_or(json!({}));
-            // This path reads `tokens.prompt_tokens || 0` with **no**
-            // `input_tokens` fallback, unlike the daily-aggregate path. Same for
-            // completion. Only `cachedTokens` accepts the cache-read alias.
-            let prompt = tokens
-                .get("prompt_tokens")
-                .and_then(Value::as_i64)
-                .unwrap_or(0);
-            let completion = tokens
-                .get("completion_tokens")
-                .and_then(Value::as_i64)
-                .unwrap_or(0);
+            // Same `||` chain as the daily-aggregate path: a present-but-zero
+            // first key falls through to the next, and the stored columns are
+            // the last resort for a row whose `tokens` blob is missing a field.
+            let prompt = token_field(&tokens, &["prompt_tokens", "input_tokens"]);
+            let prompt = if prompt != 0 {
+                prompt
+            } else {
+                r.get("promptTokens").and_then(Value::as_i64).unwrap_or(0)
+            };
+            let completion = token_field(&tokens, &["completion_tokens", "output_tokens"]);
+            let completion = if completion != 0 {
+                completion
+            } else {
+                r.get("completionTokens")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0)
+            };
             let cached = token_field(&tokens, &["cached_tokens", "cache_read_input_tokens"]);
             let cost = r.get("cost").and_then(Value::as_f64).unwrap_or(0.0);
 
@@ -751,20 +763,25 @@ pub fn get_usage_stats(conn: &Connection, period: &str, ctx: &StatsContext<'_>) 
             }
 
             match r.get("apiKey").and_then(Value::as_str) {
-                Some(api_key) => {
+                Some(raw_api_key) => {
+                    let api_key = raw_api_key.trim();
+                    let masked = mask_api_key(Some(api_key));
                     let key_name = ctx
                         .api_key_map
                         .get(api_key)
                         .and_then(|v| v.get("name"))
                         .and_then(Value::as_str)
+                        .filter(|s| !s.is_empty())
                         .map(str::to_string)
+                        .or_else(|| masked.clone())
                         .unwrap_or_else(|| {
                             format!("{}...", api_key.chars().take(8).collect::<String>())
                         });
-                    let masked = mask_api_key(Some(api_key));
+                    // Key by the FULL key: masking here merged every key that
+                    // shares an 8-character prefix into one bucket.
                     let ak_key = format!(
                         "{}|{}|{}",
-                        masked.clone().unwrap_or_default(),
+                        api_key,
                         js_str(model),
                         js_or_unknown(provider.and_then(Value::as_str))
                     );
@@ -1733,6 +1750,68 @@ mod tests {
         assert_eq!(stats["byProvider"]["openai"]["requests"], json!(2));
         assert_eq!(stats["byModel"]["gpt-4o (openai)"]["requests"], json!(2));
         assert_eq!(stats["last10Minutes"].as_array().unwrap().len(), 10);
+    }
+
+    #[test]
+    fn the_live_branch_falls_back_to_input_tokens_and_the_columns() {
+        let conn = db();
+        let now = chrono::Utc::now();
+        let recent = now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+
+        // `tokens` carries only the Anthropic spelling.
+        conn.execute(
+            "INSERT INTO usageHistory(timestamp, provider, model, promptTokens, completionTokens, cost, status, tokens, meta) VALUES(?, 'openai', 'gpt-4o', 0, 0, 0, 'ok', ?, '{}')",
+            rusqlite::params![recent, stringify_json(&json!({"input_tokens": 11, "output_tokens": 4}))],
+        )
+        .unwrap();
+        // `tokens` is empty; only the columns carry the counts.
+        conn.execute(
+            "INSERT INTO usageHistory(timestamp, provider, model, promptTokens, completionTokens, cost, status, tokens, meta) VALUES(?, 'openai', 'gpt-4o', 7, 3, 0, 'ok', '{}', '{}')",
+            rusqlite::params![recent],
+        )
+        .unwrap();
+
+        let conn_map = indexmap::IndexMap::new();
+        let node_map = indexmap::IndexMap::new();
+        let api_map = Map::new();
+        let ctx = StatsContext {
+            connection_map: &conn_map,
+            provider_node_name_map: &node_map,
+            api_key_map: &api_map,
+            now_ms: now.timestamp_millis(),
+        };
+        let stats = get_usage_stats(&conn, "24h", &ctx).unwrap();
+        assert_eq!(stats["totalPromptTokens"], json!(18));
+        assert_eq!(stats["totalCompletionTokens"], json!(7));
+    }
+
+    #[test]
+    fn keys_sharing_a_prefix_stay_in_separate_buckets() {
+        let conn = db();
+        let now = chrono::Utc::now();
+        let recent = now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        for key in ["sk-team-aaaaaaa1", "sk-team-aaaaaaa2"] {
+            conn.execute(
+                "INSERT INTO usageHistory(timestamp, provider, model, apiKey, promptTokens, completionTokens, cost, status, tokens, meta) VALUES(?, 'openai', 'gpt-4o', ?, 1, 1, 0, 'ok', '{}', '{}')",
+                rusqlite::params![recent, key],
+            )
+            .unwrap();
+        }
+        let conn_map = indexmap::IndexMap::new();
+        let node_map = indexmap::IndexMap::new();
+        let api_map = Map::new();
+        let ctx = StatsContext {
+            connection_map: &conn_map,
+            provider_node_name_map: &node_map,
+            api_key_map: &api_map,
+            now_ms: now.timestamp_millis(),
+        };
+        let stats = get_usage_stats(&conn, "24h", &ctx).unwrap();
+        assert_eq!(
+            stats["byApiKey"].as_object().unwrap().len(),
+            2,
+            "masking the bucket key merged both keys"
+        );
     }
 
     #[test]

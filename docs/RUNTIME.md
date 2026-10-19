@@ -249,11 +249,19 @@ parity value, not a live bind address, so it is not moved to the 20129 default.
 
 ## Proxy-pool remote deploys
 
-Three routes in `routes/proxy_pools.rs` generate and deploy relay workers to Cloudflare, Deno Deploy
-and Vercel, then poll deployment status: `POST /api/proxy-pools/{cloudflare,deno,vercel}-deploy`.
-Each embeds the relay source and calls the provider API with the user's token. The Cloudflare entry
-is a relay worker deploy. These are outbound infrastructure provisioning, not a dashboard-only
-feature, so a change here has network side effects outside this process.
+Four routes in `routes/proxy_pools.rs` generate and deploy relay workers to Cloudflare, Deno Deploy,
+Netlify and Vercel, then poll deployment status:
+`POST /api/proxy-pools/{cloudflare,deno,netlify,vercel}-deploy`. Each embeds the relay source and
+calls the provider API with the user's token. The Cloudflare entry is a relay worker deploy. These
+are outbound infrastructure provisioning, not a dashboard-only feature, so a change here has network
+side effects outside this process.
+
+Netlify is the odd one: its API is a digest deploy, not a build deploy. `services/netlify_relay.rs`
+creates the site, announces SHA1 (file) and SHA256 (function) digests, uploads only the ones Netlify
+lists as required, and polls until `state == "ready"`. The function is a CJS `exports.handler`
+returning a string body, because ESM syntax and stream returns both answer 502 on that runtime. It
+buffers the upstream response, so a stream arrives in one piece and the 60 s synchronous limit
+applies on both sides.
 
 The relay workers only move bytes, so the Cloudflare worker asks the origin for
 `accept-encoding: identity` and deletes `content-encoding`, `content-length`, `transfer-encoding` and

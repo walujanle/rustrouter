@@ -5,7 +5,92 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Netlify relay proxy pool**: a fifth pool type deployed through Netlify's
+  digest API (`POST /sites` → `POST /sites/{id}/deploys` → upload only the
+  required digests → poll until `ready`). The function is a CJS
+  `exports.handler` returning a string body, because ESM and stream returns
+  both answer 502 on that runtime. Responses are buffered, so a stream arrives
+  in one piece and the 60 s synchronous limit applies. The relay URL is stored
+  as `<site>/.netlify/functions/relay`.
+- **Nous Research free tier**: eight `:free` models behind a device-code OAuth
+  flow (`client_id=hermes-cli`) plus a post-exchange agent-key mint. The OAuth
+  pair stays on the row for refresh while the short-lived agent key is what the
+  executor sends; both are rotated on every refresh. Thinking uses the nested
+  `reasoning: {enabled, effort}` shape, with `auto` mapped to `medium` because
+  the upstream rejects `"auto"`. Validation is a one-token inference call, not
+  `/models`, which is public and would accept any Bearer value. API-key
+  requests through compatible nodes carry neutral `product=9router`,
+  `client=9router`, `user=9router` attribution tags.
+- **Per-key access control**: `apiKeys` gains `accessRestricted` and
+  `accessAllow`, and a restricted key may call only the combos and models in
+  its allow list. Matching is exact and case-insensitive on the resolved
+  target; a listed combo grants its members when reached through that combo.
+  A corrupt allow blob fails closed to zero entries. The dashboard exposes the
+  toggle and a picker, and `/v1/models` shows a restricted key only what it may
+  call. `SCHEMA_VERSION` is now 2; the columns are additive and existing rows
+  read as unrestricted.
+- **Model picker search**: `/regex/`, live-typed `/pattern`, `!term` and `-term`
+  now work for both models and combos, a provider-name hit surfaces that
+  provider's models, and multi-select callers get Select All / Deselect All.
+- **Combo fallback on empty output**: a 2xx response with no assistant text, no
+  tool call and no reasoning no longer wins the combo. The next model gets a
+  turn unless this was the last seat.
+
 ### Fixed
+
+- **CodeBuddy Intl**: `www.codebuddy.ai` now rejects chat requests lacking the
+  `X-Conversation-ID`, `X-Conversation-Request-ID` and `X-Conversation-Message-ID`
+  header family, returning HTTP 400 code 11128 ("conversation id missing").
+  `CodeBuddyIntlExecutor` overrides `build_headers` to inject all three: the
+  conversation id is a stable UUID v5 (RFC 4122) derived from the session key
+  (`prompt_cache_key` / `session_id` / `conversation_id`, then the first user
+  message text), so the upstream keeps conversation state pinned across retries
+  and failovers; the request and message ids are fresh UUIDs v4 per call.
+- **`PUT /api/keys/{id}`** answered 405 while the dashboard sends PUT, so the
+  pause toggle did nothing. Both PUT and PATCH are registered now.
+- **Netlify pool type on update**: `VALID_UPDATE_TYPES` omitted `deno` and
+  `netlify`, and the update path rewrote an unknown type to `http` in the
+  shared database. Both lists now carry every deployable type.
+- **OpenCode Go**: `claude-haiku-5-5` is served by `/zen/go/v1/messages` only,
+  so it declares `targetFormat: "claude"` and the pipeline falls back to that
+  transport when the client's wire format is not in `supportedFormats`. Without
+  the fallback an OpenAI-wire client translated a Claude body and POSTed it to
+  `/chat/completions`.
+- **OpenCode Go deepseek**: `response_format` is stripped for the deepseek
+  family, which rejects both `json_schema` and `json_object` with a 400 that
+  names neither the field nor the reason.
+- **OpenCode session ids**: the time field is now the low 36 bits of the digest,
+  complemented and masked to 48 bits, with the counter pinned to 1. The old
+  shape was the raw first six digest bytes, which the upstream decodes as a
+  time stamp and can reject.
+- **Claude PDF input**: every Claude capability row and family pattern now
+  reports `pdf: true`; only one unrelated row had it before. A `*claude*sonnet-5*`
+  pattern is added ahead of the generic sonnet row so a sonnet-5 id that is not
+  in the model table still gets the adaptive format and the PDF flag.
+- **Claude requests to non-Anthropic providers**: `context_management` is
+  stripped, and thinking blocks with no visible text are dropped. Both are
+  rejected upstream with a 400.
+- **Codex tools**: an explicit `strict` on a tool now survives normalization
+  instead of being discarded with the rest of the original object.
+- **Retired Codex models**: `gpt-5.5`, `gpt-5.5-review`, `gpt-5.4*`,
+  `gpt-5.3-codex-spark*` and the three matching image ids are gone from both
+  registry tables. The auto-ping loop targets `gpt-5.6-terra`.
+- **`/v1/models`**: no-auth free providers (opencode) stay listed once any other
+  provider is connected, and a per-provider disable now applies in both
+  branches.
+- **Node deletion**: custom models registered under a deleted node are removed
+  with it instead of lingering in the picker.
+- **Usage stats**: the 24h branch falls back to `input_tokens` / `output_tokens`
+  and then to the stored `promptTokens` / `completionTokens` columns. Keys are
+  trimmed before lookup and masking, and the live branch buckets by the full
+  key, so two keys sharing an 8-character prefix no longer merge.
+- **Tooltips and the proxy dropdown** are teleported to `body` with fixed
+  positioning, so a scroll container no longer clips them.
+- **Flaky pending-counter test**: it used a `now_ms` 60 s in the past, so a
+  parallel usage-stats test swept its counters mid-test. It now uses a future
+  timestamp.
 
 - **CodeBuddy Intl**: `www.codebuddy.ai` now rejects chat requests lacking the
   `X-Conversation-ID`, `X-Conversation-Request-ID` and `X-Conversation-Message-ID`

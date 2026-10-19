@@ -267,6 +267,45 @@ mod tests {
     }
 
     #[test]
+    fn sync_adds_the_access_columns_to_an_older_api_keys_table() {
+        let conn = mem();
+        // The v1 shape, before per-key access control.
+        conn.execute_batch(
+            "CREATE TABLE apiKeys (id TEXT PRIMARY KEY, key TEXT UNIQUE NOT NULL, name TEXT, machineId TEXT, isActive INTEGER DEFAULT 1, createdAt TEXT NOT NULL)",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO apiKeys(id, key, isActive, createdAt) VALUES('k1', 'sk-1', 1, '2026-01-01T00:00:00.000Z')",
+            [],
+        )
+        .unwrap();
+        sync_schema_from_tables(&conn).unwrap();
+        let cols = table_columns(&conn, "apiKeys").unwrap();
+        assert_eq!(
+            cols,
+            vec![
+                "id",
+                "key",
+                "name",
+                "machineId",
+                "isActive",
+                "createdAt",
+                "accessRestricted",
+                "accessAllow",
+            ]
+        );
+        // Existing rows read as unrestricted.
+        let access: (Option<i64>, Option<String>) = conn
+            .query_row(
+                "SELECT accessRestricted, accessAllow FROM apiKeys WHERE id = 'k1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(access.0, Some(0));
+    }
+
+    #[test]
     fn sync_adds_a_missing_column() {
         let conn = mem();
         // Simulate an older DB that lacks the column.

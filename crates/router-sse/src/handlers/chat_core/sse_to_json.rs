@@ -316,12 +316,12 @@ fn header_string(headers: &reqwest::header::HeaderMap, name: &str) -> String {
 pub async fn handle_forced_sse_to_json(
     provider_response: UpstreamResponse,
     ctx: &ChatContext<'_>,
-) -> Result<ChatResult, UpstreamResponse> {
+) -> Result<ChatResult, Box<UpstreamResponse>> {
     let content_type = header_string(&provider_response.headers, "content-type");
     let is_sse = content_type.contains("text/event-stream")
         || (content_type.is_empty() && is_responses_provider(ctx.provider));
     if !is_sse {
-        return Err(provider_response);
+        return Err(Box::new(provider_response));
     }
 
     let is_codex_responses_api =

@@ -6,7 +6,12 @@
 
 /// Bump this whenever a table, column or index below changes. It gates the
 /// pre-migration safety backup.
-pub const SCHEMA_VERSION: i64 = 1;
+/// `2` since per-key access control added two `apiKeys` columns. The reference
+/// declares the same two columns at `SCHEMA_VERSION = 2` while its migration
+/// registry still tops out at `m001`, so the additive sync is the only actor on
+/// both sides. Do not add a `MIGRATIONS` entry for this: it would stamp a
+/// version 9router never writes.
+pub const SCHEMA_VERSION: i64 = 2;
 
 /// Applied verbatim on every connection. Byte-identical to the 9router set:
 /// `journal_mode`, `auto_vacuum` and the other persisted pragmas live in the
@@ -136,6 +141,10 @@ pub const TABLES: &[TableDef] = &[
             ("machineId", "TEXT"),
             ("isActive", "INTEGER DEFAULT 1"),
             ("createdAt", "TEXT NOT NULL"),
+            // Per-key access control, in the reference's column order. Additive
+            // columns; existing rows read as unrestricted (0).
+            ("accessRestricted", "INTEGER DEFAULT 0"),
+            ("accessAllow", "TEXT"),
         ],
         primary_key: None,
         indexes: &["CREATE INDEX IF NOT EXISTS idx_ak_key ON apiKeys(key)"],
@@ -263,6 +272,14 @@ mod tests {
         assert_eq!(
             create_table_sql("usageHistory").unwrap(),
             "CREATE TABLE IF NOT EXISTS usageHistory (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT NOT NULL, provider TEXT, model TEXT, connectionId TEXT, apiKey TEXT, endpoint TEXT, promptTokens INTEGER DEFAULT 0, completionTokens INTEGER DEFAULT 0, cost REAL DEFAULT 0, status TEXT, tokens TEXT, meta TEXT)"
+        );
+    }
+
+    #[test]
+    fn api_keys_carry_access_columns_last() {
+        assert_eq!(
+            create_table_sql("apiKeys").unwrap(),
+            "CREATE TABLE IF NOT EXISTS apiKeys (id TEXT PRIMARY KEY, key TEXT UNIQUE NOT NULL, name TEXT, machineId TEXT, isActive INTEGER DEFAULT 1, createdAt TEXT NOT NULL, accessRestricted INTEGER DEFAULT 0, accessAllow TEXT)"
         );
     }
 

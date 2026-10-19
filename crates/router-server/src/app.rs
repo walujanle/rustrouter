@@ -76,7 +76,12 @@ pub fn router(state: AppState) -> Router {
         .route("/api/keys", get(keys::list).post(keys::create))
         .route(
             "/api/keys/{id}",
-            get(keys::get).patch(keys::update).delete(keys::delete),
+            get(keys::get)
+                // PUT is what the dashboard sends; PATCH is accepted too so
+                // either client works.
+                .put(keys::update)
+                .patch(keys::update)
+                .delete(keys::delete),
         )
         .route("/api/combos", get(combos::list).post(combos::create))
         .route(
@@ -241,6 +246,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/proxy-pools/deno-deploy",
             post(proxy_pools::deno_deploy),
+        )
+        .route(
+            "/api/proxy-pools/netlify-deploy",
+            post(proxy_pools::netlify_deploy),
         )
         .route(
             "/api/proxy-pools/{id}",

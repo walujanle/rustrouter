@@ -47,6 +47,8 @@ const emit = defineEmits<{
 }>();
 
 const showProxyDropdown = ref(false);
+const proxyButtonRef = ref<HTMLElement | null>(null);
+const proxyDropdownPos = ref({ top: 0, left: 0 });
 const updatingProxy = ref(false);
 const proxyDropdownRef = ref<HTMLElement | null>(null);
 
@@ -76,7 +78,7 @@ const proxyDisplayText = computed(() => {
 
 const autoPingTooltip = computed(() =>
 	props.autoPing?.provider === "codex"
-		? "Auto-starts the next 5h Codex window after reset by sending a tiny gpt-5.5 request. Consumes a small amount of quota."
+		? "Auto-starts the next 5h Codex window after reset by sending a tiny gpt-5.6-terra request. Consumes a small amount of quota."
 		: "When your 5h quota runs out, auto-sends a request the moment it resets so a new window starts right away.",
 );
 
@@ -209,13 +211,44 @@ function handleProxyOutsideClick(e: MouseEvent) {
 	}
 }
 
+/**
+ * The dropdown is teleported to `body`: the connection list sits in a
+ * scroll container, and an absolutely positioned menu is clipped by it.
+ * The estimated height flips the menu up when there is no room below.
+ */
+function positionProxyDropdown() {
+	const el = proxyButtonRef.value;
+	if (!el) return;
+	const rect = el.getBoundingClientRect();
+	const menuHeight = 40 + (props.proxyPools?.length ?? 0) * 32;
+	const openUp = rect.bottom + menuHeight > window.innerHeight && rect.top > menuHeight;
+	proxyDropdownPos.value = {
+		top: openUp ? rect.top - 4 : rect.bottom + 4,
+		left: Math.max(8, Math.min(rect.right - 176, window.innerWidth - 184)),
+	};
+}
+
+function closeOnScrollOrResize() {
+	showProxyDropdown.value = false;
+}
+
 watch(showProxyDropdown, (open) => {
-	if (open) document.addEventListener("mousedown", handleProxyOutsideClick);
-	else document.removeEventListener("mousedown", handleProxyOutsideClick);
+	if (open) {
+		positionProxyDropdown();
+		document.addEventListener("mousedown", handleProxyOutsideClick);
+		window.addEventListener("scroll", closeOnScrollOrResize, true);
+		window.addEventListener("resize", closeOnScrollOrResize);
+	} else {
+		document.removeEventListener("mousedown", handleProxyOutsideClick);
+		window.removeEventListener("scroll", closeOnScrollOrResize, true);
+		window.removeEventListener("resize", closeOnScrollOrResize);
+	}
 });
 
 onBeforeUnmount(() => {
 	document.removeEventListener("mousedown", handleProxyOutsideClick);
+	window.removeEventListener("scroll", closeOnScrollOrResize, true);
+	window.removeEventListener("resize", closeOnScrollOrResize);
 	if (cooldownInterval) clearInterval(cooldownInterval);
 });
 
@@ -292,15 +325,22 @@ async function handleSelectProxy(poolId: string) {
             type="button"
             :class="`flex w-full flex-col items-center rounded px-2 py-1 transition-colors hover:bg-black/5 dark:hover:bg-white/5 ${hasAnyProxy ? 'text-primary' : 'text-text-muted hover:text-primary'}`"
             :disabled="updatingProxy"
+            ref="proxyButtonRef"
             @click="showProxyDropdown = !showProxyDropdown"
           >
             <span class="material-symbols-outlined text-[18px]">{{ updatingProxy ? "progress_activity" : "lan" }}</span>
             <span class="text-[10px] leading-tight">Proxy</span>
           </button>
-          <div
-            v-if="showProxyDropdown"
-            class="absolute right-0 top-full z-50 mt-1 max-w-[78vw] min-w-40 rounded-lg border border-border bg-bg py-1 shadow-lg"
-          >
+          <Teleport to="body">
+            <div
+              v-if="showProxyDropdown"
+              class="fixed z-[60] min-w-40 max-w-[78vw] rounded-lg border border-border bg-bg py-1 shadow-lg"
+              :style="{
+                top: `${proxyDropdownPos.top}px`,
+                left: `${proxyDropdownPos.left}px`,
+                transform: proxyDropdownPos.top < 0 ? 'none' : undefined,
+              }"
+            >
             <button
               type="button"
               :class="`w-full text-left px-3 py-1.5 text-sm hover:bg-black/5 dark:hover:bg-white/5 ${!boundProxyPoolId ? 'text-primary font-medium' : 'text-text-main'}`"
@@ -313,7 +353,8 @@ async function handleSelectProxy(poolId: string) {
               :class="`w-full text-left px-3 py-1.5 text-sm hover:bg-black/5 dark:hover:bg-white/5 ${boundProxyPoolId === pool.id ? 'text-primary font-medium' : 'text-text-main'}`"
               @click="handleSelectProxy(pool.id)"
             >{{ pool.name }}</button>
-          </div>
+            </div>
+          </Teleport>
         </div>
         <Tooltip v-if="props.autoPing" :text="autoPingTooltip">
           <button

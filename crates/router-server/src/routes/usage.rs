@@ -127,8 +127,10 @@ async fn compute_stats(state: &AppState, period: &str) -> Option<Value> {
                 let Some(key) = k.get("key").and_then(Value::as_str) else {
                     continue;
                 };
+                // Trimmed on both sides: a stored key with surrounding
+                // whitespace never matched the value recorded on a usage row.
                 api_key_map.insert(
-                    key.to_string(),
+                    key.trim().to_string(),
                     json!({
                         "name": k.get("name").cloned().unwrap_or(Value::Null),
                         "id": k.get("id").cloned().unwrap_or(Value::Null),
@@ -598,7 +600,7 @@ fn is_auth_expired_result(result: &Value) -> bool {
 async fn codex_ready(
     state: &AppState,
     connection_id: &str,
-) -> Result<(Value, bool, ProxyOptions), Response> {
+) -> Result<(Value, bool, ProxyOptions), ApiError> {
     let connection = state
         .read({
             let id = connection_id.to_string();
@@ -606,14 +608,13 @@ async fn codex_ready(
         })
         .await;
     let Ok(Some(connection)) = connection else {
-        return Err(ApiError::not_found("Connection not found").into_response());
+        return Err(ApiError::not_found("Connection not found"));
     };
 
     if connection.get("provider").and_then(Value::as_str) != Some("codex") {
         return Err(ApiError::bad_request(
             "Codex reset credits are only available for Codex connections.",
-        )
-        .into_response());
+        ));
     }
 
     let auth_type = connection.get("authType").and_then(Value::as_str);
@@ -622,8 +623,7 @@ async fn codex_ready(
     if !is_oauth && !is_access_token {
         return Err(ApiError::bad_request(
             "Codex reset credits require an OAuth or access-token connection.",
-        )
-        .into_response());
+        ));
     }
 
     let proxy_options = proxy_options_for(&connection, state);
@@ -633,8 +633,7 @@ async fn codex_ready(
             Err(message) => {
                 return Err(ApiError::unauthorized(format!(
                     "Credential refresh failed: {message}"
-                ))
-                .into_response());
+                )));
             }
         }
     } else {
@@ -658,7 +657,7 @@ pub async fn codex_reset_credits_get(
     let (mut connection, is_oauth, proxy_options) = match codex_ready(&state, &connection_id).await
     {
         Ok(ready) => ready,
-        Err(response) => return response,
+        Err(error) => return error.into_response(),
     };
 
     let result = match get_codex_rate_limit_reset_credits(
@@ -780,7 +779,7 @@ pub async fn codex_reset_credits_post(
     let (mut connection, is_oauth, proxy_options) = match codex_ready(&state, &connection_id).await
     {
         Ok(ready) => ready,
-        Err(response) => return response,
+        Err(error) => return error.into_response(),
     };
 
     // Server-generated so a client cannot replay a redeem id.

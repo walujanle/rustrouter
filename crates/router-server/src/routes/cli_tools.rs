@@ -107,11 +107,11 @@ fn pretty(value: &Value) -> String {
 
 async fn parse_body(
     body: Result<Json<Value>, JsonRejection>,
-) -> Result<Map<String, Value>, Response> {
+) -> Result<Map<String, Value>, ApiError> {
     match body {
         Ok(Json(Value::Object(map))) => Ok(map),
-        Ok(_) => Err(ApiError::bad_request("Invalid request body").into_response()),
-        Err(_) => Err(ApiError::bad_request("Invalid JSON body").into_response()),
+        Ok(_) => Err(ApiError::bad_request("Invalid request body")),
+        Err(_) => Err(ApiError::bad_request("Invalid JSON body")),
     }
 }
 
@@ -213,7 +213,7 @@ pub async fn claude_get() -> Response {
 pub async fn claude_post(body: Result<Json<Value>, JsonRejection>) -> Response {
     let body = match parse_body(body).await {
         Ok(b) => b,
-        Err(r) => return r,
+        Err(e) => return e.into_response(),
     };
     let Some(env) = body.get("env").and_then(Value::as_object).cloned() else {
         return ApiError::bad_request("Invalid env object").into_response();
@@ -392,7 +392,7 @@ pub async fn codex_get() -> Response {
 pub async fn codex_post(body: Result<Json<Value>, JsonRejection>) -> Response {
     let body = match parse_body(body).await {
         Ok(b) => b,
-        Err(r) => return r,
+        Err(e) => return e.into_response(),
     };
     let str_of = |k: &str| {
         body.get(k)
@@ -725,7 +725,7 @@ pub async fn hermes_get() -> Response {
 pub async fn hermes_post(body: Result<Json<Value>, JsonRejection>) -> Response {
     let body = match parse_body(body).await {
         Ok(b) => b,
-        Err(r) => return r,
+        Err(e) => return e.into_response(),
     };
     let Some(base_url) = body
         .get("baseUrl")

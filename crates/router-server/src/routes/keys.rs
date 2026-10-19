@@ -12,6 +12,55 @@ use serde_json::{Value, json};
 use crate::error::ApiError;
 use crate::state::AppState;
 
+/// `KEY_ACCESS_MAX_ENTRIES`.
+const KEY_ACCESS_MAX_ENTRIES: usize = 200;
+/// `KEY_ACCESS_MAX_ENTRY_LENGTH`.
+const KEY_ACCESS_MAX_ENTRY_LENGTH: usize = 256;
+
+/// `validateKeyAccessInput`: reject rather than repair. A truncated allow list
+/// would look accepted while silently granting less than the operator declared.
+fn validate_key_access_input(input: &Value) -> Result<Value, String> {
+    let Some(obj) = input.as_object() else {
+        return Err("access must be an object { restricted, allow }".into());
+    };
+    let extra: Vec<&str> = obj
+        .keys()
+        .map(String::as_str)
+        .filter(|k| *k != "restricted" && *k != "allow")
+        .collect();
+    if !extra.is_empty() {
+        return Err(format!("access: unexpected field(s) {}", extra.join(", ")));
+    }
+    let Some(restricted) = obj.get("restricted").and_then(Value::as_bool) else {
+        return Err("access.restricted must be a boolean".into());
+    };
+    let allow = match obj.get("allow") {
+        None => Vec::new(),
+        Some(Value::Array(list)) => {
+            if list.iter().any(|e| !e.is_string()) {
+                return Err("access.allow must be an array of strings".into());
+            }
+            list.clone()
+        }
+        Some(_) => return Err("access.allow must be an array of strings".into()),
+    };
+    if allow.len() > KEY_ACCESS_MAX_ENTRIES {
+        return Err(format!(
+            "access.allow has more than {KEY_ACCESS_MAX_ENTRIES} entries"
+        ));
+    }
+    if allow.iter().any(|e| {
+        e.as_str()
+            .is_some_and(|s| s.trim().chars().count() > KEY_ACCESS_MAX_ENTRY_LENGTH)
+    }) {
+        return Err(format!(
+            "access.allow entries must be at most {KEY_ACCESS_MAX_ENTRY_LENGTH} characters"
+        ));
+    }
+    let normalized = router_db::repos::api_keys::normalize_allow_list(&allow);
+    Ok(json!({ "restricted": restricted, "allow": normalized }))
+}
+
 /// `GET /api/keys`.
 pub async fn list(State(state): State<AppState>) -> Response {
     match state.read(router_db::repos::api_keys::get_api_keys).await {
@@ -91,6 +140,14 @@ pub async fn update(
     let mut update_data = serde_json::Map::new();
     if let Some(is_active) = payload.get("isActive") {
         update_data.insert("isActive".into(), is_active.clone());
+    }
+    if let Some(access) = payload.get("access") {
+        match validate_key_access_input(access) {
+            Ok(value) => {
+                update_data.insert("access".into(), value);
+            }
+            Err(message) => return ApiError::bad_request(message).into_response(),
+        }
     }
     let update_data = Value::Object(update_data);
 

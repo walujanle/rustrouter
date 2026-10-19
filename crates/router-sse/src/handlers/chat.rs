@@ -35,7 +35,7 @@ use crate::services::capacity_adapter::{
 };
 use crate::services::combo::{
     ComboAttempt, ComboOutcome, FusionOutcome, FusionTuning, detect_required_capabilities,
-    handle_combo_chat, handle_fusion_chat,
+    handle_combo_chat, handle_fusion_chat, is_zero_content_response,
 };
 use crate::services::model::{ModelInfo, get_combo_models, get_model_info};
 use crate::services::token_refresh::{check_and_refresh_token, update_provider_credentials};
@@ -273,8 +273,22 @@ fn combo_closure<'a>(
                 handle_single_model_chat(db, attempt_body, &model, headers, endpoint, api_key)
                     .await;
             if result.success() {
+                // Only a buffered JSON body can be inspected. A live stream has
+                // already begun writing to the client, so it always wins.
+                let zero_content = match &result.body {
+                    ChatBody::Json(text) => serde_json::from_str::<Value>(text)
+                        .is_ok_and(|v| is_zero_content_response(&v)),
+                    ChatBody::Bytes(bytes) => serde_json::from_slice::<Value>(bytes)
+                        .is_ok_and(|v| is_zero_content_response(&v)),
+                    ChatBody::Stream(_) => false,
+                };
+                let attempt = if zero_content {
+                    ComboAttempt::zero_content()
+                } else {
+                    ComboAttempt::ok()
+                };
                 *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(result);
-                ComboAttempt::ok()
+                attempt
             } else {
                 ComboAttempt::failed(
                     result.status,

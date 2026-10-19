@@ -517,6 +517,9 @@ pub struct ComboAttempt {
     pub error_text: String,
     /// `errorBody.retryAfter`, when the failure carried one.
     pub retry_after: Option<String>,
+    /// A 2xx whose body carried no usable assistant content. The combo loop
+    /// treats it as a failure so the next model gets a turn.
+    pub zero_content: bool,
 }
 
 impl ComboAttempt {
@@ -526,6 +529,7 @@ impl ComboAttempt {
             status: 200,
             error_text: String::new(),
             retry_after: None,
+            zero_content: false,
         }
     }
 
@@ -535,6 +539,18 @@ impl ComboAttempt {
             status,
             error_text: error_text.into(),
             retry_after: None,
+            zero_content: false,
+        }
+    }
+
+    /// A success whose body has nothing usable in it.
+    pub fn zero_content() -> Self {
+        Self {
+            ok: true,
+            status: 200,
+            error_text: String::new(),
+            retry_after: None,
+            zero_content: true,
         }
     }
 }
@@ -554,6 +570,69 @@ pub enum ComboOutcome {
         retry_after: Option<String>,
         retry_after_human: String,
     },
+}
+
+/// `isZeroContentResponse`: a 2xx body with no assistant text, no tool call,
+/// no reasoning, and a finish reason that is absent or non-terminal.
+///
+/// Both wire shapes are checked because a combo can mix providers; a body that
+/// matches neither shape is never zero-content.
+pub fn is_zero_content_response(data: &Value) -> bool {
+    let Some(obj) = data.as_object() else {
+        return false;
+    };
+
+    if let Some(choices) = obj.get("choices").and_then(Value::as_array) {
+        if choices.is_empty() {
+            return true;
+        }
+        let Some(choice) = choices.first() else {
+            return true;
+        };
+        let msg = choice
+            .get("message")
+            .or_else(|| choice.get("delta"))
+            .unwrap_or(&Value::Null);
+        let has_content = match msg.get("content") {
+            Some(Value::String(s)) => !s.trim().is_empty(),
+            Some(Value::Array(a)) => !a.is_empty(),
+            _ => false,
+        };
+        let has_tool_calls = msg
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .is_some_and(|a| !a.is_empty())
+            || msg.get("function_call").is_some_and(|v| !v.is_null());
+        let has_reasoning = msg
+            .get("reasoning_content")
+            .and_then(Value::as_str)
+            .is_some_and(|s| !s.trim().is_empty());
+        let finish = choice.get("finish_reason").and_then(Value::as_str);
+        let normal_finish = matches!(
+            finish,
+            Some("stop") | Some("length") | Some("tool_calls") | Some("function_call")
+        );
+        if !has_content && !has_tool_calls && !has_reasoning && !normal_finish {
+            return true;
+        }
+    }
+
+    if let Some(content) = obj.get("content").and_then(Value::as_array) {
+        let has_content = content.iter().any(|block| {
+            (block.get("type").and_then(Value::as_str) == Some("text")
+                && block
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .is_some_and(|t| !t.trim().is_empty()))
+                || block.get("type").and_then(Value::as_str) == Some("tool_use")
+        });
+        let stop = obj.get("stop_reason").and_then(Value::as_str);
+        if !has_content && matches!(stop, None | Some("in_progress") | Some("incomplete")) {
+            return true;
+        }
+    }
+
+    false
 }
 
 /// `handleComboChat({...})`.
@@ -610,6 +689,18 @@ where
         let result = handle_single_model(i, model_str).await;
 
         if result.ok {
+            // A 2xx with no content is not a win: an empty assistant message
+            // would otherwise be handed to the client while the next model in
+            // the chain could have answered. The last seat still returns it,
+            // because there is nothing left to try.
+            if result.zero_content && i + 1 < rotated.len() {
+                tracing::warn!(
+                    "COMBO model {model_str} returned HTTP 200 with zero usable content, falling back"
+                );
+                last_error = Some("Zero usable content".to_string());
+                last_status = Some(200);
+                continue;
+            }
             tracing::info!("COMBO model {model_str} succeeded");
             return ComboOutcome::Success { index: i };
         }
@@ -1324,6 +1415,85 @@ mod tests {
         let messages = json!([{"role": "user", "content": "plain"}]);
         let out = flatten_tool_history(messages.as_array().unwrap());
         assert_eq!(out[0], json!({"role": "user", "content": "plain"}));
+    }
+
+    #[test]
+    fn zero_content_detection_covers_openai_shapes() {
+        // No choices at all.
+        assert!(is_zero_content_response(&json!({"choices": []})));
+        // Empty assistant message with no finish reason.
+        assert!(is_zero_content_response(
+            &json!({"choices": [{"message": {"content": ""}}]})
+        ));
+        // Whitespace only, non-terminal finish.
+        assert!(is_zero_content_response(&json!({
+            "choices": [{"message": {"content": "   "}, "finish_reason": "in_progress"}]
+        })));
+        // A tool call is real output.
+        assert!(!is_zero_content_response(&json!({
+            "choices": [{"message": {"content": "", "tool_calls": [{"id": "1"}]}}]
+        })));
+        // A normal finish with empty content is still a finished turn.
+        assert!(!is_zero_content_response(&json!({
+            "choices": [{"message": {"content": ""}, "finish_reason": "stop"}]
+        })));
+        // Reasoning alone counts as content.
+        assert!(!is_zero_content_response(&json!({
+            "choices": [{"message": {"reasoning_content": "thinking"}}]
+        })));
+        // A body matching neither wire shape is never zero-content.
+        assert!(!is_zero_content_response(&json!({"error": "nope"})));
+        assert!(!is_zero_content_response(&json!("plain")));
+    }
+
+    #[test]
+    fn zero_content_detection_covers_anthropic_shapes() {
+        // No stop reason at all, with nothing to show.
+        assert!(is_zero_content_response(&json!({"content": []})));
+        assert!(is_zero_content_response(&json!({
+            "content": [{"type": "text", "text": "  "}],
+            "stop_reason": "incomplete",
+        })));
+        assert!(!is_zero_content_response(&json!({
+            "content": [{"type": "text", "text": "hi"}],
+        })));
+        assert!(!is_zero_content_response(&json!({
+            "content": [{"type": "tool_use", "name": "read"}],
+        })));
+        // A terminal stop with no text is a finished turn, not an empty one.
+        assert!(!is_zero_content_response(&json!({
+            "content": [], "stop_reason": "end_turn",
+        })));
+    }
+
+    #[tokio::test]
+    async fn combo_skips_a_zero_content_success_on_a_non_final_seat() {
+        let body = json!({"messages": [{"role": "user", "content": "x"}]});
+        let models = vec!["a/1".to_string(), "b/2".to_string()];
+        let outcome = handle_combo_chat(&body, &models, None, "fallback", 1, false, |_i, model| {
+            let model = model.to_string();
+            async move {
+                if model == "a/1" {
+                    ComboAttempt::zero_content()
+                } else {
+                    ComboAttempt::ok()
+                }
+            }
+        })
+        .await;
+        assert!(matches!(outcome, ComboOutcome::Success { index: 1 }));
+    }
+
+    #[tokio::test]
+    async fn combo_keeps_a_zero_content_success_on_the_last_seat() {
+        let body = json!({"messages": [{"role": "user", "content": "x"}]});
+        let models = vec!["a/1".to_string()];
+        let outcome =
+            handle_combo_chat(&body, &models, None, "fallback", 1, false, |_i, _m| async {
+                ComboAttempt::zero_content()
+            })
+            .await;
+        assert!(matches!(outcome, ComboOutcome::Success { index: 0 }));
     }
 
     #[tokio::test]

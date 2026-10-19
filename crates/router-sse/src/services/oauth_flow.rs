@@ -105,7 +105,7 @@ fn encode_form(pairs: &[(&str, &str)]) -> String {
 pub fn flow_type(provider: &str) -> Option<&'static str> {
     Some(match provider {
         "codex" => "authorization_code_pkce",
-        "grok-cli" | "kilocode" | "codebuddy-intl" => "device_code",
+        "grok-cli" | "kilocode" | "codebuddy-intl" | "nous" => "device_code",
         _ => return None,
     })
 }
@@ -298,6 +298,32 @@ pub async fn request_device_code(
             }
             serde_json::from_str(&res.body).map_err(|e| e.to_string())
         }
+        "nous" => {
+            let body = encode_form(&[
+                ("client_id", cfg_str(&cfg, "clientId").unwrap_or_default()),
+                ("scope", cfg_str(&cfg, "scope").unwrap_or_default()),
+            ]);
+            let res = post_form(
+                cfg_str(&cfg, "deviceCodeUrl").unwrap_or_default(),
+                &body,
+                &[("Accept", "application/json")],
+            )
+            .await?;
+            if !(200..300).contains(&res.status) {
+                return Err(format!("Nous device code request failed: {}", res.body));
+            }
+            let data: Value = serde_json::from_str(&res.body).map_err(|e| e.to_string())?;
+            // Pass the upstream shape through: the dashboard reads
+            // `verification_uri_complete` and the poll cadence from `interval`.
+            Ok(json!({
+                "device_code": data.get("device_code").cloned().unwrap_or(Value::Null),
+                "user_code": data.get("user_code").cloned().unwrap_or(Value::Null),
+                "verification_uri": data.get("verification_uri").cloned().unwrap_or(Value::Null),
+                "verification_uri_complete": data.get("verification_uri_complete").cloned().unwrap_or(Value::Null),
+                "expires_in": data.get("expires_in").cloned().unwrap_or(Value::Null),
+                "interval": data.get("interval").cloned().unwrap_or(Value::Null),
+            }))
+        }
         "kilocode" => {
             let res =
                 post_raw_json(cfg_str(&cfg, "initiateUrl").unwrap_or_default(), "{}", &[]).await?;
@@ -396,6 +422,27 @@ pub async fn poll_for_token(
 ) -> Result<PollResult, String> {
     let cfg = oauth_config(provider)?;
     let (ok, data) = match provider {
+        "nous" => {
+            let body = encode_form(&[
+                ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+                ("client_id", cfg_str(&cfg, "clientId").unwrap_or_default()),
+                ("device_code", device_code),
+            ]);
+            let res = post_form(
+                cfg_str(&cfg, "tokenUrl").unwrap_or_default(),
+                &body,
+                &[("Accept", "application/json")],
+            )
+            .await?;
+            let data = serde_json::from_str::<Value>(&res.body).unwrap_or_else(
+                |_| json!({"error": "invalid_response", "error_description": res.body}),
+            );
+            let pending = matches!(
+                data.get("error").and_then(Value::as_str),
+                Some("authorization_pending") | Some("slow_down")
+            );
+            ((200..300).contains(&res.status) || pending, data)
+        }
         "grok-cli" => {
             let ua = "grok-pager/1.0.46 grok-shell/1.0.46 (linux; x86_64)";
             let body = encode_form(&[
@@ -526,8 +573,17 @@ pub async fn poll_for_token(
     // when it is an explicit pending/slow_down; anything else is an error.
     if ok {
         if let Some(access) = data.get("access_token").and_then(Value::as_str) {
+            // Nous trades the OAuth token for an agent key before the
+            // connection is built. Best effort: a failed mint falls back to the
+            // access token, because the login itself succeeded.
+            let agent = if provider == "nous" {
+                mint_nous_agent_key(&cfg, access).await
+            } else {
+                None
+            };
             let _ = access;
             let mapped = match provider {
+                "nous" => nous_map(&data, agent.as_ref()),
                 "grok-cli" => grok_cli_map(&data),
                 "kilocode" => json!({
                     "accessToken": data.get("access_token").cloned().unwrap_or(Value::Null),
@@ -600,6 +656,84 @@ pub async fn poll_for_token(
             .and_then(Value::as_str)
             .map(str::to_string),
         pending: false,
+    })
+}
+
+/// What a successful `POST /api/oauth/agent-key` yields.
+pub struct NousAgentKey {
+    pub api_key: String,
+    pub key_id: Option<String>,
+    pub expires_at: Option<String>,
+}
+
+/// `postExchange` for Nous: trade the OAuth access token for a short-lived
+/// inference key. Never fails the login; a `None` means "use the access token".
+pub async fn mint_nous_agent_key(cfg: &Value, access_token: &str) -> Option<NousAgentKey> {
+    let url = cfg_str(cfg, "agentKeyUrl")?;
+    let auth = format!("Bearer {access_token}");
+    let res = post_raw_json(
+        url,
+        &json!({ "min_ttl_seconds": 7200 }).to_string(),
+        &[("Accept", "application/json"), ("Authorization", &auth)],
+    )
+    .await
+    .ok()?;
+    if !(200..300).contains(&res.status) {
+        tracing::warn!(
+            target: "router_sse::oauth",
+            "Nous agent key mint failed ({}): {}",
+            res.status,
+            res.body
+        );
+        return None;
+    }
+    let data: Value = serde_json::from_str(&res.body).ok()?;
+    let api_key = data
+        .get("api_key")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())?
+        .to_string();
+    Some(NousAgentKey {
+        api_key,
+        key_id: data
+            .get("key_id")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        expires_at: data
+            .get("expires_at")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    })
+}
+
+/// `nous.mapTokens`: the agent key is the bearer the executor sends, while the
+/// OAuth pair stays on the row so the refresh path can rotate it.
+fn nous_map(tokens: &Value, agent: Option<&NousAgentKey>) -> Value {
+    let access_token = tokens
+        .get("access_token")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let mut psd = Map::new();
+    psd.insert(
+        "inferenceBaseUrl".into(),
+        json!("https://inference-api.nousresearch.com/v1"),
+    );
+    if let Some(agent) = agent {
+        if let Some(key_id) = &agent.key_id {
+            psd.insert("agentKeyId".into(), json!(key_id));
+        }
+        if let Some(expires_at) = &agent.expires_at {
+            psd.insert("agentKeyExpiresAt".into(), json!(expires_at));
+        }
+    }
+    json!({
+        "accessToken": tokens.get("access_token").cloned().unwrap_or(Value::Null),
+        "refreshToken": tokens.get("refresh_token").cloned().unwrap_or(Value::Null),
+        "expiresIn": tokens.get("expires_in").cloned().unwrap_or(Value::Null),
+        "scope": tokens.get("scope").cloned().unwrap_or(Value::Null),
+        "apiKey": agent.map(|a| a.api_key.clone()).unwrap_or(access_token),
+        "providerSpecificData": Value::Object(psd),
     })
 }
 

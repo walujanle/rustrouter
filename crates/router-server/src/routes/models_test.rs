@@ -18,11 +18,18 @@ use crate::state::AppState;
 /// token. The probe has no API key of its own, so it borrows one.
 pub(crate) async fn internal_headers(state: &AppState) -> Vec<(String, String)> {
     let mut headers = Vec::new();
+    // Prefer an unrestricted key: a restricted one would 403 the dashboard's
+    // own model test for any model outside its allow list.
     if let Ok(keys) = state.read(router_db::repos::api_keys::get_api_keys).await
         && let Some(key) = keys
             .iter()
-            .find(|k| k.get("isActive") != Some(&Value::Bool(false)))
-            .and_then(|k| k.get("key").and_then(Value::as_str))
+            .filter(|k| k.get("isActive") != Some(&Value::Bool(false)))
+            .filter(|k| k.pointer("/access/restricted").and_then(Value::as_bool) != Some(true))
+            .chain(
+                keys.iter()
+                    .filter(|k| k.get("isActive") != Some(&Value::Bool(false))),
+            )
+            .find_map(|k| k.get("key").and_then(Value::as_str))
     {
         headers.push(("Authorization".to_string(), format!("Bearer {key}")));
     }

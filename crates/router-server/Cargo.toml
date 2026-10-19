@@ -13,6 +13,7 @@ base64.workspace = true
 bcrypt = "0.19.3"
 bytes.workspace = true
 chrono.workspace = true
+crc32fast = "1.5.2"
 dashmap.workspace = true
 dirs.workspace = true
 futures.workspace = true
@@ -26,6 +27,7 @@ router-sse.workspace = true
 rust-embed = "8.12.0"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
+sha1 = "0.10.7"
 sha2 = "0.10.9"
 subtle.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "fs", "process", "net", "time", "sync"] }

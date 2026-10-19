@@ -51,6 +51,15 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
             drop: &[],
             drop_message_fields: &["reasoning_content", "reasoning", "reasoning_details"],
         },
+        // OpenCode Go's relay rejects `response_format` for the deepseek family
+        // with a 400 that names neither the field nor the reason. Every other
+        // family on the same relay accepts it.
+        Rule {
+            provider: Some("opencode-go"),
+            matcher: Matcher::Re("(?i)^deepseek"),
+            drop: &["response_format"],
+            drop_message_fields: &[],
+        },
     ]
 });
 
@@ -117,6 +126,23 @@ mod tests {
         let mut body = json!({"temperature": 0.7});
         strip_unsupported_params(Some("openai"), "gpt-5", &mut body);
         assert_eq!(body["temperature"], json!(0.7));
+    }
+
+    #[test]
+    fn opencode_go_deepseek_loses_response_format_only() {
+        let mut body = json!({"response_format": {"type": "json_object"}});
+        strip_unsupported_params(Some("opencode-go"), "deepseek-v4.1-flash", &mut body);
+        assert!(body.get("response_format").is_none());
+
+        // A non-deepseek model on the same relay keeps it.
+        let mut body = json!({"response_format": {"type": "json_object"}});
+        strip_unsupported_params(Some("opencode-go"), "glm-5.3-flash", &mut body);
+        assert!(body.get("response_format").is_some());
+
+        // Another provider's deepseek model is untouched.
+        let mut body = json!({"response_format": {"type": "json_object"}});
+        strip_unsupported_params(Some("deepseek"), "deepseek-chat", &mut body);
+        assert!(body.get("response_format").is_some());
     }
 
     #[test]

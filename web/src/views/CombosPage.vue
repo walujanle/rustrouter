@@ -90,7 +90,10 @@ async function fetchData() {
 			combos.value = (combosData.combos || []).filter((c: Combo) => !c.kind || c.kind === "llm");
 		}
 		if (providersRes.ok) {
-			activeProviders.value = providersData.connections || [];
+			// The route returns every connection, inactive ones included.
+			activeProviders.value = (providersData.connections || []).filter(
+				(conn: Record<string, any>) => conn?.isActive !== false,
+			);
 		}
 		comboStrategies.value = settingsData.comboStrategies || {};
 		const rawAdapter = settingsData.capacityAdapter || {};

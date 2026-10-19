@@ -530,6 +530,22 @@ pub async fn build_models_list(
         }
     }
 
+    // A no-auth free provider (opencode) has no connection row, so the branch
+    // below would drop it entirely once any other provider is connected. Seed a
+    // synthetic one so its models stay listed.
+    for entry in registry().entries() {
+        if entry.category.as_deref() != Some("free") || entry.no_auth != Some(true) {
+            continue;
+        }
+        if active_by_provider.iter().any(|(p, _)| p == &entry.id) {
+            continue;
+        }
+        active_by_provider.push((
+            entry.id.clone(),
+            json!({ "id": "noauth", "provider": entry.id, "isActive": true }),
+        ));
+    }
+
     let mut models: Vec<Value> = Vec::new();
 
     // Combos first (filtered by kind). Web combos expose `kind` so the caller can
@@ -597,7 +613,10 @@ pub async fn build_models_list(
                 continue;
             }
             for model in provider_models {
-                if !kind_filter.contains(&model_kind(model)) || is_disabled(alias, &model.id) {
+                if !kind_filter.contains(&model_kind(model))
+                    || is_disabled(alias, &model.id)
+                    || is_disabled(provider_id, &model.id)
+                {
                     continue;
                 }
                 models.push(json!({
@@ -793,7 +812,10 @@ pub async fn build_models_list(
                 if !kind_filter.contains(&kind) && !allow_as_llm {
                     continue;
                 }
-                if is_disabled(&output_alias, &model_id) || is_disabled(&static_alias, &model_id) {
+                if is_disabled(&output_alias, &model_id)
+                    || is_disabled(&static_alias, &model_id)
+                    || is_disabled(provider_id, &model_id)
+                {
                     continue;
                 }
 

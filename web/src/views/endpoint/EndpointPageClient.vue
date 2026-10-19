@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
+import ModelSelectModal from "@/components/ModelSelectModal.vue";
 import CardSkeleton from "@/components/ui/CardSkeleton.vue";
 import ConfirmModal from "@/components/ui/ConfirmModal.vue";
 import Button from "@/components/ui/UiButton.vue";
@@ -12,6 +13,11 @@ import { useSettingsStore } from "@/stores/settings";
 import EndpointRow from "./components/EndpointRow.vue";
 import SecurityWarning from "./components/SecurityWarning.vue";
 
+interface KeyAccess {
+	restricted: boolean;
+	allow: string[];
+}
+
 interface ApiKey {
 	id: string;
 	name: string;
@@ -19,6 +25,7 @@ interface ApiKey {
 	createdAt: string;
 	isActive?: boolean;
 	machineId?: string;
+	access?: KeyAccess;
 }
 
 interface ConfirmState {
@@ -36,6 +43,10 @@ const showAddModal = ref(false);
 const newKeyName = ref("");
 const createdKey = ref<string | null>(null);
 const confirmState = ref<ConfirmState | null>(null);
+
+const accessKeyId = ref<string | null>(null);
+const accessAllow = ref<string[]>([]);
+const showAccessPicker = ref(false);
 
 const requireApiKey = ref(false);
 const requireLogin = ref(true);
@@ -179,6 +190,75 @@ function handleKeyToggle(key: ApiKey, checked: boolean) {
 	}
 }
 
+function openAccessModal(key: ApiKey) {
+	accessKeyId.value = key.id;
+	accessAllow.value = [...(key.access?.allow ?? [])];
+	showAccessPicker.value = false;
+}
+
+function closeAccessModal() {
+	accessKeyId.value = null;
+	accessAllow.value = [];
+	showAccessPicker.value = false;
+}
+
+function accessModelValue(model: any): string {
+	return String(model?.value ?? model?.id ?? model ?? "");
+}
+
+async function saveAccess(restricted: boolean) {
+	const id = accessKeyId.value;
+	if (!id) return;
+	const access: KeyAccess = {
+		restricted,
+		allow: restricted ? accessAllow.value : [],
+	};
+	try {
+		const res = await fetch(`/api/keys/${id}`, {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ access }),
+		});
+		const data = await res.json().catch(() => ({}));
+		if (!res.ok) {
+			console.log("Error saving key access:", data?.error);
+			return;
+		}
+		keys.value = keys.value.map((k) =>
+			k.id === id ? { ...k, access: data?.key?.access ?? access } : k,
+		);
+		closeAccessModal();
+	} catch (error) {
+		console.log("Error saving key access:", error);
+	}
+}
+
+function handleAccessSelect(model: any) {
+	const value = accessModelValue(model);
+	if (value && !accessAllow.value.includes(value)) {
+		accessAllow.value = [...accessAllow.value, value];
+	}
+}
+
+function handleAccessDeselect(model: any) {
+	const value = accessModelValue(model);
+	accessAllow.value = accessAllow.value.filter((entry) => entry !== value);
+}
+
+function handleAccessSelectBatch(models: any[]) {
+	const next = [...accessAllow.value];
+	for (const model of models) {
+		const value = accessModelValue(model);
+		if (value && !next.includes(value)) next.push(value);
+	}
+	accessAllow.value = next;
+}
+
+function handleAccessDeselectBatch(models: any[]) {
+	const removed = new Set(models.map(accessModelValue));
+	accessAllow.value = accessAllow.value.filter((entry) => !removed.has(entry));
+}
+
 function maskKey(fullKey: string): string {
 	if (!fullKey || fullKey.length <= 10) return fullKey || "";
 	return fullKey.slice(0, 6) + "•".repeat(fullKey.length - 10) + fullKey.slice(-4);
@@ -310,6 +390,22 @@ onMounted(() => {
                 Created {{ new Date(apiKey.createdAt).toLocaleDateString("en-US") }}
               </p>
               <p v-if="apiKey.isActive === false" class="text-xs text-orange-500 mt-1">Paused</p>
+              <div class="mt-1.5 flex flex-wrap items-center gap-1">
+                <span
+                  v-if="apiKey.access?.restricted"
+                  class="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary"
+                  :title="apiKey.access.allow.join(', ') || 'No models allowed'"
+                >
+                  Restricted · {{ apiKey.access.allow.length }}
+                </span>
+                <button
+                  type="button"
+                  class="rounded border border-border px-1.5 py-0.5 text-[10px] text-text-muted hover:border-primary/50 hover:text-primary"
+                  @click="openAccessModal(apiKey)"
+                >
+                  {{ apiKey.access?.restricted ? "Edit access" : "Restrict access" }}
+                </button>
+              </div>
             </div>
             <div class="flex items-center gap-2">
               <Toggle
@@ -330,6 +426,61 @@ onMounted(() => {
           </div>
         </div>
       </Card>
+
+      <ModelSelectModal
+        :is-open="showAccessPicker"
+        title="Allowed models and combos"
+        :active-providers="[]"
+        :added-model-values="accessAllow"
+        :close-on-select="false"
+        size="lg"
+        @close="showAccessPicker = false"
+        @select="handleAccessSelect"
+        @deselect="handleAccessDeselect"
+        @select-batch="handleAccessSelectBatch"
+        @deselect-batch="handleAccessDeselectBatch"
+      />
+
+      <Modal
+        :is-open="accessKeyId !== null"
+        title="Restrict API key access"
+        @close="closeAccessModal"
+      >
+        <div class="flex flex-col gap-3">
+          <p class="text-xs text-text-muted">
+            A restricted key may call only the {{ accessAllow.length }} selected model(s) and
+            combo(s). Matching is exact on the resolved target; an allowed combo grants its
+            members when reached through that combo.
+          </p>
+          <div v-if="accessAllow.length === 0" class="rounded border border-border p-2 text-xs text-text-muted">
+            Nothing selected. A restricted key with an empty list can call nothing.
+          </div>
+          <div class="flex flex-wrap gap-1.5">
+            <span
+              v-for="entry in accessAllow"
+              :key="entry"
+              class="flex items-center gap-1 rounded bg-surface border border-border px-2 py-0.5 text-xs"
+            >
+              {{ entry }}
+              <button
+                type="button"
+                :aria-label="`Remove ${entry}`"
+                class="text-text-muted hover:text-red-500"
+                @click="accessAllow = accessAllow.filter((e) => e !== entry)"
+              >
+                <span class="material-symbols-outlined text-[12px]">close</span>
+              </button>
+            </span>
+          </div>
+          <Button variant="secondary" full-width @click="showAccessPicker = true">
+            Choose models and combos
+          </Button>
+          <div class="flex gap-2">
+            <Button full-width @click="saveAccess(true)">Save restriction</Button>
+            <Button variant="ghost" full-width @click="saveAccess(false)">Remove restriction</Button>
+          </div>
+        </div>
+      </Modal>
 
       <!-- Add Key Modal -->
       <Modal :is-open="showAddModal" title="Create API Key" @close="closeAddModal">

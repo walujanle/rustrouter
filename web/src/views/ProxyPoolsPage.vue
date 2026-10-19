@@ -68,6 +68,7 @@ const showBatchImportModal = ref(false);
 const showVercelModal = ref(false);
 const showCloudflareModal = ref(false);
 const showDenoModal = ref(false);
+const showNetlifyModal = ref(false);
 const showRelayMenu = ref(false);
 const editingProxyPool = ref<ProxyPool | null>(null);
 const formData = ref<ProxyPoolForm>(normalizeFormData());
@@ -79,6 +80,7 @@ const cloudflareForm = ref({
 	projectName: "cloudflare-relay",
 });
 const denoForm = ref({ denoToken: "", orgDomain: "", projectName: "" });
+const netlifyForm = ref({ netlifyToken: "", projectName: "" });
 const saving = ref(false);
 const importing = ref(false);
 const deploying = ref(false);
@@ -481,6 +483,16 @@ function closeDenoModal() {
 	showDenoModal.value = false;
 }
 
+function openNetlifyModal() {
+	netlifyForm.value = { netlifyToken: "", projectName: "" };
+	showNetlifyModal.value = true;
+}
+
+function closeNetlifyModal() {
+	if (deploying.value) return;
+	showNetlifyModal.value = false;
+}
+
 async function handleVercelDeploy() {
 	if (!vercelForm.value.vercelToken.trim()) return;
 	deploying.value = true;
@@ -551,6 +563,31 @@ async function handleDenoDeploy() {
 		}
 	} catch (error) {
 		console.log("Error deploying Deno relay:", error);
+		notify.error("Deploy failed");
+	} finally {
+		deploying.value = false;
+	}
+}
+
+async function handleNetlifyDeploy() {
+	if (!netlifyForm.value.netlifyToken.trim()) return;
+	deploying.value = true;
+	try {
+		const res = await fetch("/api/proxy-pools/netlify-deploy", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(netlifyForm.value),
+		});
+		const data = await res.json();
+		if (res.ok) {
+			await fetchProxyPools();
+			closeNetlifyModal();
+			notify.success(`Deployed: ${data.deployUrl}`);
+		} else {
+			notify.error(data.error || "Deploy failed");
+		}
+	} catch (error) {
+		console.log("Error deploying Netlify relay:", error);
 		notify.error("Deploy failed");
 	} finally {
 		deploying.value = false;
@@ -748,6 +785,14 @@ function handleConfirm() {
               <span class="material-symbols-outlined text-[20px] text-green-500">terminal</span>
               Deno Relay
             </button>
+            <button
+              type="button"
+              class="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-text-main transition-colors hover:bg-black/5 dark:hover:bg-white/5"
+              @click="openNetlifyModal(); showRelayMenu = false"
+            >
+              <span class="material-symbols-outlined text-[20px] text-teal-500">dns</span>
+              Netlify Relay
+            </button>
           </div>
         </div>
 
@@ -865,6 +910,8 @@ function handleConfirm() {
                 </Badge>
                 <Badge v-if="pool.type === 'vercel'" variant="default" size="sm">vercel relay</Badge>
                 <Badge v-if="pool.type === 'cloudflare'" variant="default" size="sm">cloudflare relay</Badge>
+                <Badge v-if="pool.type === 'deno'" variant="default" size="sm">deno relay</Badge>
+                <Badge v-if="pool.type === 'netlify'" variant="default" size="sm">netlify relay</Badge>
                 <Badge variant="default" size="sm">
                   {{ pool.boundConnectionCount || 0 }} bound
                 </Badge>
@@ -1114,6 +1161,56 @@ function handleConfirm() {
             {{ deploying ? "Deploying..." : "Deploy Relay" }}
           </Button>
           <Button full-width variant="ghost" :disabled="deploying" @click="closeDenoModal">
+            Cancel
+          </Button>
+        </div>
+      </div>
+    </Modal>
+
+    <Modal :is-open="showNetlifyModal" title="Deploy Netlify Relay" @close="closeNetlifyModal">
+      <div class="flex flex-col gap-4">
+        <div class="rounded-lg bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 p-3 flex flex-col gap-1.5">
+          <p class="text-sm text-text-main font-medium">What is Netlify Relay?</p>
+          <p class="text-xs text-text-muted">
+            Deploys a relay function to Netlify&apos;s edge network. All AI provider requests are forwarded through Netlify, masking your real IP.
+          </p>
+          <ul class="text-xs text-text-muted list-disc pl-4 space-y-0.5">
+            <li>Free tier: 125k function invocations and 100GB bandwidth per month</li>
+            <li>Function responses are buffered, so streams arrive in one piece</li>
+            <li>Synchronous functions are capped at 60 seconds per request</li>
+            <li>Deploy multiple relays for maximum IP diversity</li>
+          </ul>
+          <div class="mt-2 pt-2 border-t border-black/10 dark:border-white/10 text-xs text-text-muted">
+            <p class="font-medium text-text-main mb-1">How to generate an API token:</p>
+            <ol class="list-decimal pl-4 space-y-0.5">
+              <li>Go to <b>app.netlify.com</b> &rarr; <b>User settings</b></li>
+              <li>Open <b>Applications</b> &rarr; <b>Personal access tokens</b></li>
+              <li>Create a token and copy it here</li>
+            </ol>
+          </div>
+        </div>
+        <Input
+          v-model="netlifyForm.netlifyToken"
+          label="Netlify API Token"
+          placeholder="your-netlify-personal-access-token"
+          type="password"
+          hint="Token is used once for deployment and not stored."
+        />
+        <Input
+          v-model="netlifyForm.projectName"
+          label="Site Name"
+          placeholder="netlify-relay"
+          hint="Becomes the site subdomain. Leave empty for an auto-generated name."
+        />
+        <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          <Button
+            full-width
+            :disabled="!netlifyForm.netlifyToken.trim() || deploying"
+            @click="handleNetlifyDeploy"
+          >
+            {{ deploying ? "Deploying..." : "Deploy Relay" }}
+          </Button>
+          <Button full-width variant="ghost" :disabled="deploying" @click="closeNetlifyModal">
             Cancel
           </Button>
         </div>

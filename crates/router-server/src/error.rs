@@ -16,7 +16,10 @@ pub struct ApiError {
     pub status: StatusCode,
     pub message: String,
     /// Extra top-level fields, e.g. `retryAfter` on a lockout.
-    pub extra: Option<Value>,
+    ///
+    /// Boxed so `ApiError` stays small enough that a `Result<T, ApiError>` does
+    /// not trip `clippy::result_large_err` on every route that returns one.
+    pub extra: Option<Box<Value>>,
     /// Response headers, e.g. `Retry-After`.
     pub headers: Vec<(&'static str, String)>,
 }
@@ -56,7 +59,7 @@ impl ApiError {
     }
 
     pub fn with_extra(mut self, extra: Value) -> Self {
-        self.extra = Some(extra);
+        self.extra = Some(Box::new(extra));
         self
     }
 
@@ -81,7 +84,7 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let mut body = serde_json::Map::new();
         body.insert("error".into(), json!(self.message));
-        if let Some(Value::Object(extra)) = self.extra {
+        if let Some(Value::Object(extra)) = self.extra.map(|boxed| *boxed) {
             for (k, v) in extra {
                 body.insert(k, v);
             }

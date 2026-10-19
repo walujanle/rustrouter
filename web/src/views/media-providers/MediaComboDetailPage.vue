@@ -92,7 +92,13 @@ async function fetchAll() {
 			const k = await keysRes.json();
 			apiKey.value = (k.keys || []).find((x: Record<string, any>) => x.isActive !== false)?.key || "";
 		}
-		if (connsRes.ok) connections.value = (await connsRes.json()).connections || [];
+		if (connsRes.ok) {
+			// Inactive connections are still returned by the route; the picker
+			// must not offer them.
+			connections.value = ((await connsRes.json()).connections || []).filter(
+				(conn: Record<string, any>) => conn?.isActive !== false,
+			);
+		}
 		if (!comboRes.ok) {
 			combo.value = null;
 			loading.value = false;

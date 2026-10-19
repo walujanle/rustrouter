@@ -30,7 +30,7 @@ pub fn period_ms(period: &str) -> Option<i64> {
 /// Keys sharing a machine-id prefix (team keys) must not collide, so the tail
 /// is kept once the key is long enough to have a distinct one.
 pub fn mask_api_key(key: Option<&str>) -> Option<String> {
-    let key = key?;
+    let key = key?.trim();
     if key.is_empty() {
         return None;
     }
@@ -276,16 +276,21 @@ mod tests {
     fn pending_counters_go_up_and_down() {
         // Use a fresh state by exercising the public API; the global is shared
         // across tests in one binary, so keys are namespaced per test.
-        track_pending_request("t1", Some("p"), Some("c1"), true, false, 1000);
-        track_pending_request("t1", Some("p"), Some("c1"), true, false, 1000);
+        //
+        // The timestamp is far in the future on purpose: a start also records a
+        // 60 s deadline, and a parallel test that reads usage stats sweeps every
+        // expired one. A small `now_ms` here would be swept mid-test.
+        let now = 4_000_000_000_000;
+        track_pending_request("t1", Some("p"), Some("c1"), true, false, now);
+        track_pending_request("t1", Some("p"), Some("c1"), true, false, now);
         let snap = pending_snapshot();
         assert_eq!(snap["byModel"]["t1 (p)"], json!(2));
 
-        track_pending_request("t1", Some("p"), Some("c1"), false, false, 1000);
+        track_pending_request("t1", Some("p"), Some("c1"), false, false, now);
         let snap = pending_snapshot();
         assert_eq!(snap["byModel"]["t1 (p)"], json!(1));
 
-        track_pending_request("t1", Some("p"), Some("c1"), false, false, 1000);
+        track_pending_request("t1", Some("p"), Some("c1"), false, false, now);
         let snap = pending_snapshot();
         assert!(
             snap["byModel"].get("t1 (p)").is_none(),

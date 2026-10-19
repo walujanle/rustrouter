@@ -331,8 +331,15 @@ fn normalize_codex_tools(body: &mut Value) {
         let (parameters, removed) = strip_codex_unsupported_patterns(parameters);
         removed_patterns += removed;
 
-        // The tool is rebuilt from scratch rather than patched, so fields like
-        // `strict` and `function` never reach the upstream.
+        // `strict` is explicit in the Responses schema. It is captured before
+        // the rebuild because everything else on the tool is discarded, and
+        // inserted after `parameters` to match the reference's key order.
+        let strict = obj.get("strict").and_then(Value::as_bool).or_else(|| {
+            function
+                .and_then(|f| f.get("strict"))
+                .and_then(Value::as_bool)
+        });
+
         let mut flattened = Map::new();
         flattened.insert("type".into(), json!("function"));
         flattened.insert(
@@ -343,6 +350,9 @@ fn normalize_codex_tools(body: &mut Value) {
             flattened.insert("description".into(), json!(description));
         }
         flattened.insert("parameters".into(), parameters);
+        if let Some(strict) = strict {
+            flattened.insert("strict".into(), json!(strict));
+        }
         // The untruncated trimmed name is what `tool_choice` is validated
         // against.
         valid_names.insert(name);
@@ -1307,6 +1317,24 @@ mod tests {
             "hosted tools pass through"
         );
         assert_eq!(tools[2]["name"], json!("freeform"));
+    }
+
+    #[test]
+    fn explicit_tool_strict_survives_the_rebuild() {
+        let mut body = json!({"tools": [
+            {"type": "function", "name": "a", "strict": true, "parameters": {"type": "object"}},
+            {"type": "function", "function": {"name": "b", "strict": false, "parameters": {"type": "object"}}},
+            {"type": "function", "name": "c", "parameters": {"type": "object"}},
+        ]});
+        normalize_codex_tools(&mut body);
+        let tools = body["tools"].as_array().unwrap();
+        assert_eq!(tools[0]["strict"], json!(true));
+        assert_eq!(tools[1]["strict"], json!(false));
+        // Absent stays absent rather than becoming false.
+        assert!(tools[2].get("strict").is_none());
+        // `strict` sits after `parameters`, matching the reference's key order.
+        let keys: Vec<&String> = tools[0].as_object().unwrap().keys().collect();
+        assert_eq!(keys, vec!["type", "name", "parameters", "strict"]);
     }
 
     #[test]

@@ -72,7 +72,7 @@ fn status(code: u16) -> StatusCode {
 }
 
 /// The standard error envelope produced by `build_error_body`.
-fn json_err(code: u16, message: &str) -> Response {
+pub(crate) fn json_err(code: u16, message: &str) -> Response {
     (status(code), Json(build_error_body(code, message))).into_response()
 }
 
@@ -309,9 +309,36 @@ fn exact_embedding_usage(raw: Option<&Value>) -> Option<Value> {
 
 // ─── chat family ──────────────────────────────────────────────────────────
 
+/// The per-key access gate for a chat-shaped body.
+///
+/// Runs on the requested target before combo expansion, so an allowed combo
+/// does not implicitly allow calling its members directly. `None` means the
+/// request may proceed.
+async fn gate_chat_target(
+    state: &AppState,
+    headers: &HeaderMap,
+    query_key: Option<&str>,
+    body: &Value,
+) -> Option<Response> {
+    // Four sources, not the two the chat handlers use for `requireApiKey`: a
+    // restricted key sent as `x-goog-api-key` or `?key=` must not look like
+    // "no key" and be treated as unrestricted.
+    let client_key = super::key_access::extract_client_api_key(headers, query_key);
+    let access = super::key_access::key_access_for(state, client_key.as_deref()).await?;
+    let requested = body
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let info = resolve_model_info(state, &requested).await;
+    let is_combo = info.provider.is_empty();
+    super::key_access::enforce(Some(&access), &requested, &info, is_combo)
+}
+
 async fn chat_route(
     state: &AppState,
     headers: &HeaderMap,
+    query_key: Option<&str>,
     endpoint: &str,
     body: &Bytes,
 ) -> Response {
@@ -319,13 +346,19 @@ async fn chat_route(
         return json_err(400, "Invalid JSON body");
     };
     let client_headers = lower_headers(headers);
+    let api_key = handler_api_key(headers);
+
+    if let Some(response) = gate_chat_target(state, headers, query_key, &body).await {
+        return response;
+    }
+
     let result = handle_chat(
         &state.db,
         ChatRequest {
             body,
             headers: &client_headers,
             endpoint: Some(endpoint),
-            api_key: handler_api_key(headers),
+            api_key,
         },
     )
     .await;
@@ -335,28 +368,73 @@ async fn chat_route(
 pub async fn chat_completions(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Query(params): Query<HashMap<String, String>>,
     body: Bytes,
 ) -> Response {
-    chat_route(&state, &headers, "/v1/chat/completions", &body).await
+    chat_route(
+        &state,
+        &headers,
+        params.get("key").map(String::as_str),
+        "/v1/chat/completions",
+        &body,
+    )
+    .await
 }
 
-pub async fn messages(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
-    chat_route(&state, &headers, "/v1/messages", &body).await
+pub async fn messages(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<HashMap<String, String>>,
+    body: Bytes,
+) -> Response {
+    chat_route(
+        &state,
+        &headers,
+        params.get("key").map(String::as_str),
+        "/v1/messages",
+        &body,
+    )
+    .await
 }
 
-pub async fn responses(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
-    chat_route(&state, &headers, "/v1/responses", &body).await
+pub async fn responses(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<HashMap<String, String>>,
+    body: Bytes,
+) -> Response {
+    chat_route(
+        &state,
+        &headers,
+        params.get("key").map(String::as_str),
+        "/v1/responses",
+        &body,
+    )
+    .await
 }
 
 /// `/codex/*` is rewritten onto `/api/v1/responses` by `next.config.mjs`.
-pub async fn codex(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
-    chat_route(&state, &headers, "/v1/responses", &body).await
+pub async fn codex(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<HashMap<String, String>>,
+    body: Bytes,
+) -> Response {
+    chat_route(
+        &state,
+        &headers,
+        params.get("key").map(String::as_str),
+        "/v1/responses",
+        &body,
+    )
+    .await
 }
 
 /// `/v1/responses/compact`: the same pipeline, with `body._compact = true`.
 pub async fn responses_compact(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Query(params): Query<HashMap<String, String>>,
     body: Bytes,
 ) -> Response {
     let Ok(mut body) = parse_json(&body) else {
@@ -365,6 +443,17 @@ pub async fn responses_compact(
     if let Some(obj) = body.as_object_mut() {
         obj.insert("_compact".into(), json!(true));
     }
+    let api_key = handler_api_key(&headers);
+    if let Some(response) = gate_chat_target(
+        &state,
+        &headers,
+        params.get("key").map(String::as_str),
+        &body,
+    )
+    .await
+    {
+        return response;
+    }
     let client_headers = lower_headers(&headers);
     let result = handle_chat(
         &state.db,
@@ -372,7 +461,7 @@ pub async fn responses_compact(
             body,
             headers: &client_headers,
             endpoint: Some("/v1/responses/compact"),
-            api_key: handler_api_key(&headers),
+            api_key,
         },
     )
     .await;
@@ -383,6 +472,7 @@ pub async fn responses_compact(
 pub async fn ollama_chat(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Query(params): Query<HashMap<String, String>>,
     body: Bytes,
 ) -> Response {
     let model = serde_json::from_slice::<Value>(&body)
@@ -393,6 +483,17 @@ pub async fn ollama_chat(
         return json_err(400, "Invalid JSON body");
     };
 
+    let api_key = handler_api_key(&headers);
+    if let Some(response) = gate_chat_target(
+        &state,
+        &headers,
+        params.get("key").map(String::as_str),
+        &body,
+    )
+    .await
+    {
+        return response;
+    }
     let client_headers = lower_headers(&headers);
     let result = handle_chat(
         &state.db,
@@ -400,7 +501,7 @@ pub async fn ollama_chat(
             body,
             headers: &client_headers,
             endpoint: Some("/v1/api/chat"),
-            api_key: handler_api_key(&headers),
+            api_key,
         },
     )
     .await;
@@ -425,25 +526,44 @@ pub async fn ollama_chat(
 // ─── models family ────────────────────────────────────────────────────────
 
 /// `GET /v1` and `GET /v1/models`.
-pub async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
+pub async fn models(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
     let skip = header(&headers, INTERNAL_MODELS_FETCH_HEADER) == Some("1");
     let data = build_models_list(&state.db, &["llm"], skip).await;
+    let api_key =
+        super::key_access::extract_client_api_key(&headers, params.get("key").map(String::as_str));
+    let access = super::key_access::key_access_for(&state, api_key.as_deref()).await;
+    let data = super::key_access::filter_models_list(access.as_ref(), data);
     Json(json!({ "object": "list", "data": data })).into_response()
 }
 
 /// `GET /v1/models/{kind}` and `GET /v1/models/{provider}/{model}`.
-pub async fn model_by_id(State(state): State<AppState>, Path(rest): Path<String>) -> Response {
+pub async fn model_by_id(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(rest): Path<String>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
     let segments: Vec<&str> = rest.split('/').filter(|s| !s.is_empty()).collect();
     let identifier = segments.join("/");
+
+    let api_key =
+        super::key_access::extract_client_api_key(&headers, params.get("key").map(String::as_str));
+    let access = super::key_access::key_access_for(&state, api_key.as_deref()).await;
 
     if segments.len() == 1
         && let Some(kinds) = kind_slug_map(&identifier)
     {
         let data = build_models_list(&state.db, kinds, false).await;
+        let data = super::key_access::filter_models_list(access.as_ref(), data);
         return Json(json!({ "object": "list", "data": data })).into_response();
     }
 
     let models = build_models_list(&state.db, &["llm"], false).await;
+    let models = super::key_access::filter_models_list(access.as_ref(), models);
     let matched = models
         .into_iter()
         .find(|candidate| candidate.get("id").and_then(Value::as_str) == Some(identifier.as_str()));
@@ -538,6 +658,16 @@ pub async fn gemini_generate(
 
     let converted = convert_gemini_to_internal(&body, &model, stream);
     let api_key = gemini_client_api_key(&headers, &params);
+    if let Some(response) = gate_chat_target(
+        &state,
+        &headers,
+        params.get("key").map(String::as_str),
+        &converted,
+    )
+    .await
+    {
+        return response;
+    }
     let client_headers = lower_headers(&headers);
     let endpoint = format!("/v1beta/models/{path}");
     let result = handle_chat(
@@ -788,6 +918,13 @@ pub async fn embeddings(
     }
     let (provider, model) = (info.provider, info.model);
     let label = format!("{provider}/{model}");
+    let client_key = super::key_access::extract_client_api_key(&headers, None);
+    if let Some(access) = super::key_access::key_access_for(&state, client_key.as_deref()).await
+        && let Some(response) =
+            super::key_access::enforce_resolved(Some(&access), model_str, &provider, &model)
+    {
+        return response;
+    }
 
     // The core receives the fully-qualified model, as `{...body, model}`.
     let mut core_body = body.clone();
@@ -916,7 +1053,12 @@ async fn refresh_and_retry_embeddings(
 // ─── systemone ────────────────────────────────────────────────────────────
 
 /// `POST /v1/systemone`.
-pub async fn systemone(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+pub async fn systemone(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<HashMap<String, String>>,
+    body: Bytes,
+) -> Response {
     let Ok(body) = parse_json(&body) else {
         return json_err(400, "Invalid JSON body");
     };
@@ -942,6 +1084,16 @@ pub async fn systemone(State(state): State<AppState>, headers: HeaderMap, body: 
     let info = resolve_model_info(&state, model_str).await;
     if info.provider.is_empty() {
         return json_err(400, "Invalid model format");
+    }
+    // A second, four-source resolution: the `requireApiKey` gate above keeps
+    // its two-source semantics, but a restricted key sent as `x-goog-api-key`
+    // or `?key=` must still be recognised as restricted.
+    let client_key =
+        super::key_access::extract_client_api_key(&headers, params.get("key").map(String::as_str));
+    if let Some(access) = super::key_access::key_access_for(&state, client_key.as_deref()).await
+        && let Some(response) = super::key_access::enforce(Some(&access), model_str, &info, false)
+    {
+        return response;
     }
     let (provider, model) = (info.provider, info.model);
     let label = format!("{provider}/{model}");
@@ -1005,7 +1157,12 @@ pub async fn systemone(State(state): State<AppState>, headers: HeaderMap, body: 
 // ─── search ───────────────────────────────────────────────────────────────
 
 /// `POST /v1/search`.
-pub async fn search(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+pub async fn search(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<HashMap<String, String>>,
+    body: Bytes,
+) -> Response {
     let Ok(body) = parse_json(&body) else {
         return json_err(400, "Invalid JSON body");
     };
@@ -1040,7 +1197,20 @@ pub async fn search(State(state): State<AppState>, headers: HeaderMap, body: Byt
         .await
         .unwrap_or_default();
 
-    if let Some(models) = get_combo_models_from_data(&provider_input, &Value::Array(combos)) {
+    let combo_models = get_combo_models_from_data(&provider_input, &Value::Array(combos));
+    let client_key =
+        super::key_access::extract_client_api_key(&headers, params.get("key").map(String::as_str));
+    if let Some(access) = super::key_access::key_access_for(&state, client_key.as_deref()).await
+        && let Some(response) = super::key_access::enforce_provider(
+            Some(&access),
+            &provider_input,
+            combo_models.is_some(),
+        )
+    {
+        return response;
+    }
+
+    if let Some(models) = combo_models {
         return run_modality_combo(
             &state,
             &body,
@@ -1137,7 +1307,12 @@ async fn single_provider_search(state: &AppState, body: Value, provider_input: S
 // ─── web fetch ────────────────────────────────────────────────────────────
 
 /// `POST /v1/web/fetch`.
-pub async fn web_fetch(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+pub async fn web_fetch(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<HashMap<String, String>>,
+    body: Bytes,
+) -> Response {
     let Ok(body) = parse_json(&body) else {
         return json_err(400, "Invalid JSON body");
     };
@@ -1174,7 +1349,20 @@ pub async fn web_fetch(State(state): State<AppState>, headers: HeaderMap, body: 
         .await
         .unwrap_or_default();
 
-    if let Some(models) = get_combo_models_from_data(&provider_input, &Value::Array(combos)) {
+    let combo_models = get_combo_models_from_data(&provider_input, &Value::Array(combos));
+    let client_key =
+        super::key_access::extract_client_api_key(&headers, params.get("key").map(String::as_str));
+    if let Some(access) = super::key_access::key_access_for(&state, client_key.as_deref()).await
+        && let Some(response) = super::key_access::enforce_provider(
+            Some(&access),
+            &provider_input,
+            combo_models.is_some(),
+        )
+    {
+        return response;
+    }
+
+    if let Some(models) = combo_models {
         return run_modality_combo(
             &state,
             &body,
@@ -1299,11 +1487,37 @@ where
             let fut = single(state.clone(), model.to_string());
             async move {
                 let response = fut.await;
-                if response.status().is_success() {
+                if !response.status().is_success() {
+                    return combo_failure(response).await;
+                }
+                // Search and fetch answer JSON, so a non-JSON body is either an
+                // unexpected upstream shape or a proxy error page. Leave it
+                // untouched rather than buffering something unclassifiable.
+                let is_json = response
+                    .headers()
+                    .get("content-type")
+                    .and_then(|v| v.to_str().ok())
+                    .is_some_and(|v| v.contains("application/json"));
+                if !is_json {
                     *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(response);
-                    ComboAttempt::ok()
+                    return ComboAttempt::ok();
+                }
+                // Buffer a 2xx so an empty assistant message can be rejected
+                // before it becomes the combo's answer. The rebuilt response
+                // goes into the slot either way, so a zero-content win on the
+                // last seat still returns the original body.
+                let (parts, body) = response.into_parts();
+                let bytes = axum::body::to_bytes(body, 16 << 20)
+                    .await
+                    .unwrap_or_default();
+                let zero_content = serde_json::from_slice::<Value>(&bytes)
+                    .is_ok_and(|v| router_sse::services::combo::is_zero_content_response(&v));
+                let response = Response::from_parts(parts, axum::body::Body::from(bytes));
+                *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(response);
+                if zero_content {
+                    ComboAttempt::zero_content()
                 } else {
-                    combo_failure(response).await
+                    ComboAttempt::ok()
                 }
             }
         },
@@ -1357,6 +1571,7 @@ async fn combo_failure(response: Response) -> ComboAttempt {
         status: code,
         error_text: message,
         retry_after,
+        zero_content: false,
     }
 }
 

@@ -333,23 +333,22 @@ pub fn build_default_headers(
             }
             // `claude-code-20250219` is a first-party marker; strip it and drop
             // the header entirely when nothing is left.
-            for key in ["anthropic-beta"] {
-                if let Some(value) = headers
-                    .get(key)
-                    .and_then(|v| v.to_str().ok())
-                    .map(str::to_string)
-                {
-                    let filtered = value
-                        .split(',')
-                        .map(str::trim)
-                        .filter(|f| !f.is_empty() && *f != "claude-code-20250219")
-                        .collect::<Vec<_>>()
-                        .join(",");
-                    if filtered.is_empty() {
-                        headers.remove(key);
-                    } else {
-                        insert_header(&mut headers, key, &filtered)?;
-                    }
+            let key = "anthropic-beta";
+            if let Some(value) = headers
+                .get(key)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+            {
+                let filtered = value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|f| !f.is_empty() && *f != "claude-code-20250219")
+                    .collect::<Vec<_>>()
+                    .join(",");
+                if filtered.is_empty() {
+                    headers.remove(key);
+                } else {
+                    insert_header(&mut headers, key, &filtered)?;
                 }
             }
         }
@@ -359,6 +358,82 @@ pub fn build_default_headers(
         insert_header(&mut headers, "accept", "text/event-stream")?;
     }
     Ok(headers)
+}
+
+/// `NOUS_ATTRIBUTION` from the reference: Nous Portal asks for attribution on
+/// API-key requests. The values are a neutral router identity, never a
+/// credential or a claim to be another client.
+const NOUS_ATTRIBUTION_HOST: &str = "inference-api.nousresearch.com";
+const NOUS_ATTRIBUTION_PATH: &str = "/v1/chat/completions";
+const NOUS_ATTRIBUTION_TAGS: [&str; 3] = ["product=9router", "client=9router", "user=9router"];
+
+/// Add the Nous attribution tags when the request is an API-key call to the
+/// Nous inference endpoint.
+///
+/// The decision uses the URL the request will actually use (`build_url`), not
+/// node metadata, so a runtime transport that points elsewhere is not tagged.
+/// Only an exact host match counts: `host_str()` strips userinfo and never
+/// suffix-matches, so `...@evil.test` and `....evil.test` both fail.
+pub fn apply_nous_attribution(
+    executor: &dyn Executor,
+    model: &str,
+    body: Value,
+    stream: bool,
+    credentials: &Credentials,
+) -> Value {
+    if !executor.provider().starts_with("openai-compatible-") {
+        return body;
+    }
+    if credentials.api_key.as_deref().is_none_or(str::is_empty) {
+        return body;
+    }
+    if !body.is_object() {
+        return body;
+    }
+    if body.get("tags").is_some_and(|t| !t.is_array()) {
+        return body;
+    }
+    let Ok(url) = executor.build_url(model, stream, 0, credentials) else {
+        return body;
+    };
+    let Ok(parsed) = url::Url::parse(&url) else {
+        return body;
+    };
+    if parsed.scheme() != "https"
+        || parsed.host_str() != Some(NOUS_ATTRIBUTION_HOST)
+        || parsed.path() != NOUS_ATTRIBUTION_PATH
+    {
+        return body;
+    }
+
+    let mut tags: Vec<Value> = body
+        .get("tags")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    for fallback in NOUS_ATTRIBUTION_TAGS {
+        let prefix = &fallback[..fallback.find('=').map_or(0, |i| i + 1)];
+        // An empty attribution value does not satisfy the upstream rule, so a
+        // blank tag is dropped rather than kept.
+        tags.retain(|tag| match tag.as_str() {
+            Some(s) if s.starts_with(prefix) => !s[prefix.len()..].trim().is_empty(),
+            _ => true,
+        });
+        if !tags
+            .iter()
+            .any(|tag| tag.as_str().is_some_and(|s| s.starts_with(prefix)))
+        {
+            tags.push(Value::String(fallback.to_string()));
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    tags.retain(|tag| seen.insert(tag.to_string()));
+
+    let mut out = body;
+    if let Some(obj) = out.as_object_mut() {
+        obj.insert("tags".into(), Value::Array(tags));
+    }
+    out
 }
 
 /// Fold the requested JSON schema into a system prompt for
@@ -514,10 +589,11 @@ impl Executor for DefaultExecutor {
         &self,
         model: &str,
         body: Value,
-        _stream: bool,
-        _credentials: &Credentials,
+        stream: bool,
+        credentials: &Credentials,
     ) -> Value {
-        let mut transformed = apply_json_schema_fallback(&self.provider, body);
+        let attributed = apply_nous_attribution(self, model, body, stream, credentials);
+        let mut transformed = apply_json_schema_fallback(&self.provider, attributed);
         if quirk_truthy(&self.config, "dropClientMetadata")
             && let Some(obj) = transformed.as_object_mut()
         {
@@ -605,6 +681,17 @@ async fn refresh_for_provider(
 ) -> Option<RefreshedCredentials> {
     match provider {
         "codex" => refresh_from_grant(provider, credentials, refresh_token, proxy_options).await,
+        // Nous rotates both the OAuth pair and a short-lived agent key, so it
+        // needs the same refresher the scheduler uses rather than the generic
+        // grant.
+        "nous" => {
+            crate::services::token_refresh::refresh_token_by_provider(
+                provider,
+                credentials,
+                proxy_options,
+            )
+            .await
+        }
         // Kilocode uses the device-code flow and has no refresh token support.
         _ => None,
     }
@@ -904,6 +991,128 @@ mod tests {
         // An unknown id gets an empty transport.
         let unknown = DefaultExecutor::new("not-a-provider");
         assert!(unknown.config().base_url.is_none());
+    }
+
+    fn nous_credentials(base_url: &str) -> Credentials {
+        let mut provider_specific_data = Map::new();
+        provider_specific_data.insert("baseUrl".into(), json!(base_url));
+        provider_specific_data.insert("apiType".into(), json!("chat"));
+        Credentials {
+            api_key: Some("private-test-key".into()),
+            provider_specific_data,
+            ..Credentials::default()
+        }
+    }
+
+    fn nous_body() -> Value {
+        json!({
+            "model": "stepfun/step-5-preview:free",
+            "messages": [{ "role": "user", "content": "hello" }],
+        })
+    }
+
+    #[test]
+    fn nous_attribution_adds_neutral_tags_without_the_key() {
+        let executor = DefaultExecutor::new("openai-compatible-chat-nous-test");
+        let credentials = nous_credentials("https://inference-api.nousresearch.com/v1");
+        let out = apply_nous_attribution(
+            &executor,
+            "stepfun/step-5-preview:free",
+            nous_body(),
+            false,
+            &credentials,
+        );
+        assert_eq!(
+            out["tags"],
+            json!(["product=9router", "client=9router", "user=9router"])
+        );
+        assert!(!out.to_string().contains("private-test-key"));
+    }
+
+    #[test]
+    fn nous_attribution_preserves_caller_tags_and_drops_blank_defaults() {
+        let executor = DefaultExecutor::new("openai-compatible-chat-nous-test");
+        let credentials = nous_credentials("https://inference-api.nousresearch.com/v1");
+        let mut body = nous_body();
+        body["tags"] = json!(["product=my-app", "user=", "client= ", "custom=value"]);
+        let out = apply_nous_attribution(&executor, "m", body, false, &credentials);
+        assert_eq!(
+            out["tags"],
+            json!([
+                "product=my-app",
+                "custom=value",
+                "client=9router",
+                "user=9router"
+            ])
+        );
+    }
+
+    #[test]
+    fn nous_attribution_refuses_other_hosts_and_schemes() {
+        let executor = DefaultExecutor::new("openai-compatible-chat-nous-test");
+        for base in [
+            "https://api.example.test/v1",
+            "https://inference-api.nousresearch.com.evil.test/v1",
+            "https://inference-api.nousresearch.com@evil.test/v1",
+            "http://inference-api.nousresearch.com/v1",
+            "not-a-url",
+        ] {
+            let out =
+                apply_nous_attribution(&executor, "m", nous_body(), false, &nous_credentials(base));
+            assert!(out.get("tags").is_none(), "{base} should not be tagged");
+        }
+    }
+
+    #[test]
+    fn nous_attribution_needs_an_api_key_and_a_chat_endpoint() {
+        let executor = DefaultExecutor::new("openai-compatible-chat-nous-test");
+        let mut oauth_only = nous_credentials("https://inference-api.nousresearch.com/v1");
+        oauth_only.api_key = None;
+        oauth_only.access_token = Some("oauth-token".into());
+        assert!(
+            apply_nous_attribution(&executor, "m", nous_body(), false, &oauth_only)
+                .get("tags")
+                .is_none()
+        );
+
+        let responses = nous_credentials("https://inference-api.nousresearch.com/v1");
+        let mut responses_psd = responses.clone();
+        responses_psd
+            .provider_specific_data
+            .insert("apiType".into(), json!("responses"));
+        assert!(
+            apply_nous_attribution(&executor, "m", nous_body(), false, &responses_psd)
+                .get("tags")
+                .is_none()
+        );
+
+        // A runtime transport wins over the node metadata, so a Responses URL
+        // there is not tagged even though the node says `chat`.
+        let mut runtime = nous_credentials("https://inference-api.nousresearch.com/v1");
+        runtime.runtime_transport = Some(
+            serde_json::from_value(json!({
+                "baseUrl": "https://inference-api.nousresearch.com/v1/responses"
+            }))
+            .unwrap(),
+        );
+        assert!(
+            apply_nous_attribution(&executor, "m", nous_body(), false, &runtime)
+                .get("tags")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn nous_attribution_ignores_non_compatible_providers() {
+        let executor = DefaultExecutor::new("deepseek");
+        let out = apply_nous_attribution(
+            &executor,
+            "m",
+            nous_body(),
+            false,
+            &nous_credentials("https://inference-api.nousresearch.com/v1"),
+        );
+        assert!(out.get("tags").is_none());
     }
 
     #[test]

@@ -101,6 +101,9 @@ pub fn export_db(conn: &Connection) -> DbResult<Value> {
                 "machineId": r.get::<_, Option<String>>("machineId")?,
                 "isActive": r.get::<_, i64>("isActive")? == 1,
                 "createdAt": r.get::<_, String>("createdAt")?,
+                // Per-key access control. Without these two an imported
+                // restricted key silently becomes unrestricted.
+                "access": crate::repos::api_keys::row_access(r)?,
             }))
         })?;
         for row in rows {
@@ -261,8 +264,22 @@ pub fn import_db(conn: &Connection, payload: &Value) -> DbResult<Value> {
 
     if let Some(Value::Array(items)) = payload.get("apiKeys") {
         for k in items {
+            let access = k.get("access").cloned().unwrap_or(Value::Null);
+            let restricted = access.get("restricted") == Some(&Value::Bool(true));
+            let allow = access
+                .get("allow")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let allow_json = Value::Array(
+                crate::repos::api_keys::normalize_allow_list(&allow)
+                    .into_iter()
+                    .map(Value::String)
+                    .collect(),
+            )
+            .to_string();
             conn.execute(
-                "INSERT OR REPLACE INTO apiKeys(id, key, name, machineId, isActive, createdAt) VALUES(?, ?, ?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO apiKeys(id, key, name, machineId, isActive, createdAt, accessRestricted, accessAllow) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
                 rusqlite::params![
                     str_field(k, "id"),
                     str_field(k, "key"),
@@ -270,6 +287,8 @@ pub fn import_db(conn: &Connection, payload: &Value) -> DbResult<Value> {
                     opt_str(k, "machineId"),
                     i64::from(k.get("isActive") != Some(&Value::Bool(false))),
                     str_field_or(k, "createdAt", &now_iso()),
+                    i64::from(restricted),
+                    allow_json,
                 ],
             )?;
         }
@@ -417,7 +436,8 @@ mod tests {
                 "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z",
                 "proxyUrl": "http://y" }],
             "apiKeys": [{ "id": "k1", "key": "sk-x", "name": "Key", "machineId": "m",
-                "isActive": true, "createdAt": "2026-01-01T00:00:00.000Z" }],
+                "isActive": true, "createdAt": "2026-01-01T00:00:00.000Z",
+                "access": { "restricted": true, "allow": ["Main", "cx/gpt-5.6-terra"] } }],
             "combos": [{ "id": "cb1", "name": "Combo", "kind": null, "models": ["a"],
                 "createdAt": "2026-01-01T00:00:00.000Z", "updatedAt": "2026-01-01T00:00:00.000Z" }],
             "modelAliases": { "fast": "gpt-4o-mini" },
@@ -436,6 +456,12 @@ mod tests {
         assert_eq!(exported["providerNodes"][0]["baseUrl"], json!("http://x"));
         assert_eq!(exported["proxyPools"][0]["proxyUrl"], json!("http://y"));
         assert_eq!(exported["apiKeys"][0]["key"], json!("sk-x"));
+        // A restricted key must survive the round trip; dropping `access` here
+        // would silently widen it to unrestricted.
+        assert_eq!(
+            exported["apiKeys"][0]["access"],
+            json!({ "restricted": true, "allow": ["Main", "cx/gpt-5.6-terra"] })
+        );
         assert_eq!(exported["combos"][0]["models"], json!(["a"]));
         assert_eq!(exported["modelAliases"]["fast"], json!("gpt-4o-mini"));
         assert_eq!(exported["customModels"][0]["name"], json!("M"));
