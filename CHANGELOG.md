@@ -3,6 +3,23 @@
 All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is semantic.
 
+## [0.2.1] - 2026-10-19
+
+### Added
+
+- **Nous Research provider icon**: `web/public/providers/nous.png`, so the
+  provider card and the model picker show the Nous mark instead of the text
+  fallback (`NR`).
+
+### Fixed
+
+- **rustls advisories RUSTSEC-2026-0346 through -0349**: `cargo audit` flagged
+  rustls 0.23.45 for a buffered-application-data leak after ECH rejection, a
+  Brotli certificate decompression that could allocate up to 1 GiB before
+  authentication, an unauthenticated ServerHello downgrade to classical key
+  exchange, and `Debug` impls on client session values that exposed TLS secrets.
+  Bumped to 0.23.46, the release that fixes the set.
+
 ## [0.2.0] - 2026-10-19
 
 ### Added
@@ -286,7 +303,10 @@ All notable changes to this project are documented here. Format follows
 
 Initial release.
 
-[Unreleased]: https://github.com/walujanle/rustrouter/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/walujanle/rustrouter/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/walujanle/rustrouter/releases/tag/v0.2.1
+[0.2.0]: https://github.com/walujanle/rustrouter/releases/tag/v0.2.0
+[0.1.5]: https://github.com/walujanle/rustrouter/releases/tag/v0.1.5
 [0.1.4]: https://github.com/walujanle/rustrouter/releases/tag/v0.1.4
 [0.1.3]: https://github.com/walujanle/rustrouter/releases/tag/v0.1.3
 [0.1.2]: https://github.com/walujanle/rustrouter/releases/tag/v0.1.2
