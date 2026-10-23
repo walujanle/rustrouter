@@ -1,6 +1,6 @@
 {
 	"name": "rustrouter-windows-arm64",
-	"version": "0.2.2",
+	"version": "0.3.0",
 	"description": "rustrouter binary for windows-arm64",
 	"license": "MIT",
 	"repository": {
