@@ -58,6 +58,8 @@ returned instead of being held for ~100 s.
   polls it. `stale_deadlines` also became a `VecDeque` drained from the front
   instead of a `Vec` rescanned in full twice per request.
 
+## [0.3.1] - 2026-10-23
+
 ### Security
 
 - **rustls-webpki 0.103.15 → 0.103.16 (RUSTSEC-2026-0382)**: certificate
