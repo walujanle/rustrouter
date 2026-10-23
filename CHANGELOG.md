@@ -3,6 +3,61 @@
 All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is semantic.
 
+## [Unreleased]
+
+### Changed
+
+- **Chat request path: one cached config snapshot instead of repeated reads.**
+  A chat request read `settings`, `combos`, `modelAliases` and `providerNodes`
+  from SQLite nine to twelve times, parsing each row's JSON on every call. A new
+  `router_db::config_cache` holds one `Arc<ConfigSnapshot>` per process, keyed by
+  connection and dropped by the SQLite update hook on a write to any of those
+  tables, with a two-second TTL for writes from the other application sharing
+  the file. The request path now clones one `Arc`.
+
+- **Capability and pricing lookups are memoised.** A model id missing from
+  `catalog.json`'s exact tables walked all 101 glob patterns, and the chat
+  pipeline resolves capabilities five to six times per request: 15.9 µs per
+  lookup, 6.2 µs for pricing. Both are now memoised in a bounded map
+  (`0.09 µs` per hit). The capability memo is keyed by a source generation that
+  `set_catalog_source` and `invalidate_catalog` bump, so a new synced catalog is
+  never answered from the old one.
+
+- **The catalog sync no longer detaches the process-wide source.** `collect_entries`
+  used to call `set_catalog_source(None)` and walk every registered model, which
+  left concurrent requests resolving against the hand tables for the length of
+  the walk. The baseline is now computed per lookup by
+  `capabilities_without_catalog_source`, which skips the source without touching
+  the global.
+
+- **`SseStream` no longer rebuilds its line buffer per chunk.** `push` collected
+  the whole buffer into a fresh `Vec<String>` and rebuilt it from the remainder,
+  allocating one `String` per line and a new buffer every chunk; `decode`
+  allocated a `String` that was immediately appended to that buffer. Both now
+  write in place, with the splitter's behaviour pinned by a test that feeds the
+  same frame at every possible chunk boundary.
+
+### Performance
+
+Measured against the previous binary on one host, `mock` upstream, 30 s per run:
+
+| workload | before | after |
+|---|---|---|
+| streaming, 128 concurrent | 294 rps, 7.79 cores, 212 MB peak | 3,222 rps, 3.58 cores, 100 MB peak |
+| JSON, 8 concurrent | 339 rps, 7.44 cores, 157 MB peak | 8,694 rps, 5.05 cores, 97 MB peak |
+
+Idle RSS after a burst settles at 92 MB and stays there. Two further changes are
+part of that: `TCP_NODELAY` on every accepted socket, which removes the peer's
+delayed-ACK stall (~40 ms) from each keep-alive round trip, and mimalloc's purge
+timers pinned to 1 ms with the arena multiplier at 1, so a burst's pages are
+returned instead of being held for ~100 s.
+
+- **Idle memory reclaim reaches the worker heaps.** `mi_collect` only collects
+  the calling thread's heap, so the reclaim thread freed 576 kB of a 94 MB heap.
+  It now hands one collect task per runtime worker, which runs on the worker that
+  polls it. `stale_deadlines` also became a `VecDeque` drained from the front
+  instead of a `Vec` rescanned in full twice per request.
+
 ## [0.2.2] - 2026-10-19
 
 ### Fixed

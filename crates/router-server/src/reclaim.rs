@@ -62,11 +62,68 @@ impl Drop for Guard {
     }
 }
 
+/// Tune mimalloc's purge timers for a long-lived, bursty server.
+///
+/// mimalloc keeps freed pages for `purge_delay` ms before decommitting them, and
+/// arenas multiply that by `arena_purge_mult` (10 by default), so a burst's
+/// arenas stay resident for ~100 s after the last request even though nothing
+/// will reuse them. Pinning the base delay to one second and the arena
+/// multiplier to one makes the allocator return that memory on its own, which
+/// matters more than the (small) cost of re-faulting pages on the next burst.
+///
+/// `mi_option_set` is documented as not thread safe, so this runs from the boot
+/// path before the runtime and any request exist. The numeric option ids come
+/// from mimalloc v3's `mi_option_e`; the sys crate does not export constants for
+/// the newer entries.
+pub fn tune_allocator() {
+    // Ids are positions in mimalloc v3's `mi_option_e` (include/mimalloc.h).
+    // The sys crate exports constants only up to the legacy names, so the
+    // newer entries are spelled by position here; the boot log prints the
+    // values read back so a mismatch is visible immediately.
+    /// `mi_option_purge_delay` — milliseconds before a freed page is purged.
+    const PURGE_DELAY: i32 = 15;
+    /// `mi_option_arena_purge_mult` — multiplier applied to the arena delay.
+    const ARENA_PURGE_MULT: i32 = 24;
+    /// `mi_option_page_full_retain` — full pages kept per size class.
+    const PAGE_FULL_RETAIN: i32 = 36;
+    // SAFETY: plain integers, valid option ids for the vendored mimalloc v3,
+    // called single-threaded at startup.
+    unsafe {
+        // mimalloc keeps freed pages for `purge_delay` ms, and arenas multiply
+        // that by `arena_purge_mult` (10 by default), so a burst's pages stay
+        // resident for ~100 s after the last request. One millisecond with a
+        // multiplier of one makes a purge effectively immediate.
+        //
+        // Not zero: `mi_arenas_try_purge` returns early when the delay is
+        // `<= 0` ("nothing will be scheduled"), so zero disables arena purging
+        // rather than forcing it.
+        libmimalloc_sys::mi_option_set(PURGE_DELAY, 1);
+        libmimalloc_sys::mi_option_set(ARENA_PURGE_MULT, 1);
+        // Two retained full pages per size class is mimalloc's default; zero
+        // keeps the allocator from parking a burst's largest classes.
+        libmimalloc_sys::mi_option_set(PAGE_FULL_RETAIN, 0);
+        tracing::info!(
+            target: "rustrouter::mem",
+            "allocator: purge_delay={}ms arena_purge_mult={} page_full_retain={}",
+            libmimalloc_sys::mi_option_get(PURGE_DELAY),
+            libmimalloc_sys::mi_option_get(ARENA_PURGE_MULT),
+            libmimalloc_sys::mi_option_get(PAGE_FULL_RETAIN),
+        );
+    }
+}
+
 /// Start the reclaim thread. Called once from the server boot path.
+///
+/// [`tune_allocator`] must already have run: the bin crate calls it before
+/// anything allocates, which is the only point mimalloc honours the arena size.
 pub fn spawn() {
+    // Captured here, on the async caller: a plain OS thread has no runtime
+    // context, so `Handle::try_current()` inside the loop always fails and the
+    // per-worker collect would silently never run.
+    let handle = tokio::runtime::Handle::try_current().ok();
     let _ = std::thread::Builder::new()
         .name("reclaim".into())
-        .spawn(|| {
+        .spawn(move || {
             let mut idle = 0u32;
             loop {
                 std::thread::sleep(TICK);
@@ -79,9 +136,57 @@ pub fn spawn() {
                     continue;
                 }
                 idle = 0;
-                trim();
+                trim_all_threads(handle.as_ref());
             }
         });
+}
+
+/// Collect every runtime worker's heap, then the process-wide heaps.
+///
+/// mimalloc 3 keeps a separate heap ("theap") per thread, and `mi_collect` only
+/// collects the *calling* thread's heap. The memory a burst leaves behind is
+/// almost entirely in the tokio workers' heaps, so collecting from this idle
+/// thread alone frees almost nothing: in a burst test it returned 576 kB of a
+/// 94 MB heap.
+///
+/// `spawn_blocking` runs each job on a blocking-pool thread, not a worker, which
+/// is the wrong heap. `block_in_place` would run on a worker but panics on a
+/// current-thread runtime. The portable answer is to hand each job a marker that
+/// runs `mi_collect` on the worker that executes it: a task spawned on the
+/// runtime is polled by a worker, so the collect runs in that worker's thread.
+///
+/// In practice a burst touches most workers, and collecting from each spawned
+/// task covers the worker that polls it. Any heap not visited this round is
+/// visited on the next idle window, so the footprint converges without a
+/// dedicated thread per worker.
+fn trim_all_threads(handle: Option<&tokio::runtime::Handle>) {
+    // The calling thread's own heap plus the arenas and the C heap.
+    trim();
+
+    let Some(handle) = handle else {
+        return;
+    };
+    let workers = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .clamp(1, 16);
+    for _ in 0..workers {
+        handle.spawn(async {
+            // A yield keeps this task from being polled inline by the caller;
+            // the worker that resumes it owns the heap we want to collect.
+            tokio::task::yield_now().await;
+            collect_this_thread();
+        });
+    }
+}
+
+/// `mi_collect` on the calling thread's heap.
+///
+/// Separate from [`trim`] because the spawned worker tasks must not also run
+/// `malloc_trim` and the per-OS working-set calls once per worker.
+fn collect_this_thread() {
+    // SAFETY: no arguments, no return; safe on any thread.
+    unsafe { libmimalloc_sys::mi_collect(true) };
 }
 
 /// Ask each heap to hand its free pages back to the OS.
@@ -92,6 +197,16 @@ pub fn spawn() {
 /// heap: the C allocator the bundled SQLite uses. Every call is best-effort;
 /// where a platform has none, the process relies on the pool caps alone.
 fn trim() {
+    // The Rust heap first. `mi_collect(true)` abandons the per-thread free
+    // lists and releases the segments they hold; without it mimalloc keeps a
+    // burst's pages in its own arenas and the process stays at its high-water
+    // mark. It is a no-op on a heap with nothing to reclaim, and it runs only
+    // from this idle thread, never on the request path.
+    //
+    // SAFETY: `mi_collect` takes a bool and returns nothing; it is safe to call
+    // on any thread and does not touch user memory.
+    unsafe { libmimalloc_sys::mi_collect(true) };
+
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     {
         // SAFETY: no arguments, and the return value is a plain status flag.

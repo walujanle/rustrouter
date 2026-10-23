@@ -303,6 +303,17 @@ pub fn router(state: AppState) -> Router {
 pub async fn serve(state: AppState, addr: SocketAddr) -> std::io::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!("listening on http://{addr}");
+    // `TCP_NODELAY` on every accepted socket. Without it, Nagle holds the small
+    // frames an SSE response writes back to back until the peer ACKs, and a
+    // request/response round trip on a keep-alive connection pays the peer's
+    // delayed-ACK timer (~40 ms on Linux) on every turn. `axum::serve` does not
+    // set it; the listener extension is the supported place.
+    use axum::serve::ListenerExt;
+    let listener = listener.tap_io(|tcp| {
+        if let Err(error) = tcp.set_nodelay(true) {
+            tracing::debug!("failed to set TCP_NODELAY: {error}");
+        }
+    });
     axum::serve(
         listener,
         router(state).into_make_service_with_connect_info::<SocketAddr>(),

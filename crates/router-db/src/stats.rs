@@ -55,7 +55,15 @@ pub struct UsageState {
     pub connection_map_ts: i64,
     /// `(deadline_ms, model_key)` pairs, swept lazily instead of held as
     /// per-request timers.
-    pub stale_deadlines: Vec<(i64, String)>,
+    ///
+    /// A deque, not a `Vec`: entries are appended in deadline order (every
+    /// request uses the same timeout), so the expired ones are always a prefix.
+    /// Draining that prefix is O(expired) instead of the O(len) full scan a
+    /// `Vec::retain` performs on *every* start and finish. At a few thousand
+    /// requests per second the `Vec` held a 60-second window of entries and
+    /// rescanned all of them twice per request, which was measurable CPU and
+    /// tens of megabytes of retained strings.
+    pub stale_deadlines: std::collections::VecDeque<(i64, String)>,
 }
 
 static STATE: OnceLock<Mutex<UsageState>> = OnceLock::new();
@@ -112,25 +120,35 @@ pub fn track_pending_request(
     {
         st.last_error_provider = (p.to_lowercase(), now_ms);
     }
-    st.stale_deadlines
-        .retain(|(deadline, _)| *deadline > now_ms);
+    // Deadlines are appended in order, so the expired ones are a prefix: pop
+    // until the front is live. This is O(expired) and, on the steady-state path
+    // where nothing has expired yet, O(1).
+    while st
+        .stale_deadlines
+        .front()
+        .is_some_and(|(deadline, _)| *deadline <= now_ms)
+    {
+        st.stale_deadlines.pop_front();
+    }
     if started {
         st.stale_deadlines
-            .push((now_ms + PENDING_TIMEOUT_MS, model_key));
+            .push_back((now_ms + PENDING_TIMEOUT_MS, model_key));
     }
 }
 
 /// Zero any counter whose 60 s deadline has passed. Call before reading stats.
 pub fn sweep_stale_pending(now_ms: i64) {
     let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
-    let expired: Vec<String> = st
+    let mut expired: Vec<String> = Vec::new();
+    while st
         .stale_deadlines
-        .iter()
-        .filter(|(deadline, _)| *deadline <= now_ms)
-        .map(|(_, key)| key.clone())
-        .collect();
-    st.stale_deadlines
-        .retain(|(deadline, _)| *deadline > now_ms);
+        .front()
+        .is_some_and(|(deadline, _)| *deadline <= now_ms)
+    {
+        if let Some((_, key)) = st.stale_deadlines.pop_front() {
+            expired.push(key);
+        }
+    }
 
     for model_key in expired {
         if let Some(v) = st.pending_by_model.get_mut(&model_key)
@@ -295,6 +313,50 @@ mod tests {
         assert!(
             snap["byModel"].get("t1 (p)").is_none(),
             "zero keys are dropped"
+        );
+    }
+
+    /// A finished request must not leave its deadline behind, and an expired
+    /// deadline must clear the counter it was tracking.
+    ///
+    /// The deque is ordered by deadline, so the sweep is a prefix drain. If a
+    /// later append ever used a smaller deadline the order would break, so this
+    /// pins the ordering the sweep depends on.
+    #[test]
+    fn deadlines_drain_as_a_prefix_and_clear_their_counter() {
+        let now = 4_000_000_000_000;
+        track_pending_request("t4", Some("p"), Some("c4"), true, false, now);
+        {
+            let st = state().lock().unwrap_or_else(|e| e.into_inner());
+            let deadline = st
+                .stale_deadlines
+                .back()
+                .map(|(d, _)| *d)
+                .expect("a start records a deadline");
+            assert_eq!(deadline, now + PENDING_TIMEOUT_MS);
+            let ordered = st
+                .stale_deadlines
+                .iter()
+                .map(|(d, _)| *d)
+                .collect::<Vec<_>>();
+            assert!(
+                ordered.windows(2).all(|w| w[0] <= w[1]),
+                "deadlines must stay sorted for the prefix drain"
+            );
+        }
+        assert_eq!(pending_snapshot()["byModel"]["t4 (p)"], json!(1));
+
+        // Sweep at the deadline: the counter is zeroed and the entry is gone.
+        sweep_stale_pending(now + PENDING_TIMEOUT_MS);
+        assert!(pending_snapshot()["byModel"].get("t4 (p)").is_none());
+        assert!(
+            !state()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .stale_deadlines
+                .iter()
+                .any(|(_, key)| key == "t4 (p)"),
+            "an expired entry must be drained"
         );
     }
 

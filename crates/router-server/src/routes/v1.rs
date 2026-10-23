@@ -201,26 +201,27 @@ async fn api_key_gate(state: &AppState, api_key: Option<&str>) -> Option<Respons
 /// `getModelInfo(modelStr)` with the DB-backed alias table, combos and nodes.
 /// Shared with `translator.rs`.
 pub(crate) async fn resolve_model_info(state: &AppState, model_str: &str) -> ModelInfo {
-    let aliases = state
-        .read(router_db::repos::aliases::get_model_aliases)
+    // One cached snapshot instead of three reads: aliases, nodes and combos
+    // change only on a dashboard write, and the snapshot is invalidated by the
+    // database's write hook.
+    let config = state
+        .read(router_db::config_cache::snapshot)
         .await
         .ok()
-        .and_then(|v| v.as_object().cloned());
-    let nodes = state
-        .read(|conn| router_db::repos::nodes::get_provider_nodes(conn, None))
-        .await
-        .unwrap_or_default();
-    let combos = state
-        .read(router_db::repos::combos::get_combos)
-        .await
         .unwrap_or_default();
     let combo_lookup = |name: &str| -> Option<Value> {
-        combos
+        config
+            .combos
             .iter()
             .find(|c| c.get("name").and_then(Value::as_str) == Some(name))
             .cloned()
     };
-    get_model_info(model_str, aliases.as_ref(), combo_lookup, &nodes)
+    get_model_info(
+        model_str,
+        Some(&config.aliases),
+        combo_lookup,
+        &config.nodes,
+    )
 }
 
 fn proxy_options(credentials: &Credentials) -> ProxyOptions {

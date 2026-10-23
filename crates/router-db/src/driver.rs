@@ -307,7 +307,26 @@ fn open_connection(path: &Path) -> DbResult<Connection> {
     conn.execute_batch(PRAGMA_SQL)?;
     // The memory overlay runs second so it cannot disturb the shared-file set.
     conn.execute_batch(MEMORY_PRAGMA_SQL)?;
+    install_config_hook(&conn)?;
     Ok(conn)
+}
+
+/// Drop the config snapshot when a write lands in a table it caches.
+///
+/// A write here is a dashboard edit, so the invalidation is rare. The
+/// `usageHistory` write on every completed request does *not* touch these
+/// tables, so the per-request write path does not thrash the cache.
+pub(crate) fn install_config_hook(conn: &Connection) -> DbResult<()> {
+    // A named `fn` rather than a closure: the hook is generic over the table
+    // name's lifetime, and a closure infers one concrete lifetime, which fails
+    // the higher-ranked bound.
+    fn on_write(_action: rusqlite::hooks::Action, _database: &str, table: &str, _rowid: i64) {
+        if matches!(table, "settings" | "combos" | "providerNodes" | "kv") {
+            crate::config_cache::invalidate_all();
+        }
+    }
+    conn.update_hook(Some(on_write as fn(_, &str, &str, i64)))?;
+    Ok(())
 }
 
 #[cfg(test)]

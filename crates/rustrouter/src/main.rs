@@ -106,6 +106,11 @@ enum Command {
 }
 
 fn main() -> ExitCode {
+    // Before anything allocates: mimalloc sizes its arena on the first
+    // allocation that needs one, and the option has no effect afterwards.
+    // `router_server::reclaim::tune_allocator` documents why the arena is
+    // disabled; this is the earliest point it can run.
+    router_server::reclaim::tune_allocator();
     let cli = Cli::parse();
     init_tracing();
     mem_report::spawn_if_enabled();

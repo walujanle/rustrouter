@@ -118,13 +118,19 @@ pub async fn handle_chat(db: &Db, request: ChatRequest<'_>) -> ChatResult {
 
     // A failed settings read must not read as `requireApiKey: false`; that would
     // open the gate whenever the database is unhealthy.
-    let settings = match db.with_conn(router_db::repos::settings::get_settings) {
-        Ok(settings) => settings,
+    //
+    // The snapshot carries settings, combos, aliases and nodes in one `Arc`, so
+    // this request reads them once instead of re-querying and re-parsing each
+    // table at every stage below. It is invalidated by the database's own write
+    // hook, so a dashboard edit is visible on the next request.
+    let config = match db.with_conn(router_db::config_cache::snapshot) {
+        Ok(config) => config,
         Err(error) => {
             tracing::error!(%error, "chat: settings read failed");
             return ChatResult::error(http_status::SERVICE_UNAVAILABLE, "Settings unavailable");
         }
     };
+    let settings = &config.settings;
 
     if js_truthy(settings.get("requireApiKey").unwrap_or(&Value::Null)) {
         let Some(key) = api_key.as_deref().filter(|k| !k.is_empty()) else {
@@ -160,12 +166,14 @@ pub async fn handle_chat(db: &Db, request: ChatRequest<'_>) -> ChatResult {
     }
 
     let required = detect_required_capabilities(&body);
-    let combos = load_combos(db);
-    let combo_lookup = |name: &str| -> Option<Value> { lookup_combo(&combos, name) };
+    // The snapshot already carries every combo row, so the combo expansion
+    // below reads them from memory instead of re-querying `combos` a second time
+    // in the same request.
+    let combo_lookup = |name: &str| -> Option<Value> { lookup_combo(&config.combos, name) };
 
     if let Some(combo_models) = get_combo_models(&model_str, combo_lookup) {
-        let strategy = combo_strategy(&settings, &model_str);
-        let augmented = augment_models_with_capacity_adapter(&combo_models, &required, &settings);
+        let strategy = combo_strategy(settings, &model_str);
+        let augmented = augment_models_with_capacity_adapter(&combo_models, &required, settings);
         let adapter_added: HashSet<String> = augmented
             .iter()
             .filter(|m| !combo_models.contains(m))
@@ -184,12 +192,13 @@ pub async fn handle_chat(db: &Db, request: ChatRequest<'_>) -> ChatResult {
                 db,
                 body,
                 combo_models,
-                &settings,
+                settings,
                 &model_str,
                 headers,
                 endpoint,
                 api_key,
                 chain,
+                Arc::clone(&config),
             )
             .await;
         }
@@ -215,21 +224,19 @@ pub async fn handle_chat(db: &Db, request: ChatRequest<'_>) -> ChatResult {
                 api_key.clone(),
                 Arc::clone(&slot),
                 &chain,
+                &config,
             ),
         )
         .await;
         return combo_result(outcome, &slot);
     }
 
-    let solo = augment_models_with_capacity_adapter(
-        std::slice::from_ref(&model_str),
-        &required,
-        &settings,
-    );
+    let solo =
+        augment_models_with_capacity_adapter(std::slice::from_ref(&model_str), &required, settings);
     if solo.len() > 1 {
         let adapter_added: HashSet<String> =
             solo.iter().filter(|m| **m != model_str).cloned().collect();
-        let strategy = get_active_adapter_strategy(&required, &settings);
+        let strategy = get_active_adapter_strategy(&required, settings);
         let slot: ResultSlot = Arc::new(Mutex::new(None));
         let outcome = handle_combo_chat(
             &body,
@@ -247,6 +254,7 @@ pub async fn handle_chat(db: &Db, request: ChatRequest<'_>) -> ChatResult {
                 api_key.clone(),
                 Arc::clone(&slot),
                 &ComboChain::new(),
+                &config,
             ),
         )
         .await;
@@ -261,6 +269,7 @@ pub async fn handle_chat(db: &Db, request: ChatRequest<'_>) -> ChatResult {
         endpoint,
         api_key,
         ComboChain::new(),
+        config,
     )
     .await
 }
@@ -277,6 +286,7 @@ fn combo_closure<'a>(
     api_key: Option<String>,
     slot: ResultSlot,
     chain: &'a ComboChain,
+    config: &'a Arc<router_db::config_cache::ConfigSnapshot>,
 ) -> impl FnMut(
     usize,
     &str,
@@ -292,6 +302,7 @@ fn combo_closure<'a>(
         // Each attempt starts from the chain this combo was expanded under, so a
         // member that is itself a combo extends the same path.
         let chain = chain.clone();
+        let config = Arc::clone(config);
         Box::pin(async move {
             let result = handle_single_model_chat(
                 db,
@@ -301,6 +312,7 @@ fn combo_closure<'a>(
                 endpoint,
                 api_key,
                 chain,
+                config,
             )
             .await;
             if result.success() {
@@ -409,6 +421,10 @@ fn push_combo(chain: &mut ComboChain, name: &str) -> Result<(), String> {
 /// Boxed because it and [`run_fusion`] call each other: an unboxed cycle makes
 /// the compiler's type computation diverge (`E0391`), so the box erases one
 /// edge of the cycle.
+// The parameters are the request context, threaded unchanged through the combo
+// and fusion recursion; grouping them into a struct would only move the same
+// fields behind one more indirection on every hop.
+#[allow(clippy::too_many_arguments)]
 pub fn handle_single_model_chat<'a>(
     db: &'a Db,
     body: Value,
@@ -417,12 +433,15 @@ pub fn handle_single_model_chat<'a>(
     endpoint: Option<&'a str>,
     api_key: Option<String>,
     chain: ComboChain,
+    config: Arc<router_db::config_cache::ConfigSnapshot>,
 ) -> Pin<Box<dyn Future<Output = ChatResult> + Send + 'a>> {
     Box::pin(handle_single_model_chat_inner(
-        db, body, model_str, headers, endpoint, api_key, chain,
+        db, body, model_str, headers, endpoint, api_key, chain, config,
     ))
 }
 
+// Same context as the boxed wrapper above, minus the `Box::pin`.
+#[allow(clippy::too_many_arguments)]
 async fn handle_single_model_chat_inner(
     db: &Db,
     body: Value,
@@ -431,19 +450,17 @@ async fn handle_single_model_chat_inner(
     endpoint: Option<&str>,
     api_key: Option<String>,
     mut chain: ComboChain,
+    config: Arc<router_db::config_cache::ConfigSnapshot>,
 ) -> ChatResult {
     let log: Arc<dyn ChatLog> = Arc::new(TracingChatLog);
-    let aliases = db
-        .with_conn(router_db::repos::aliases::get_model_aliases)
-        .ok()
-        .and_then(|v| v.as_object().cloned());
-    let nodes = db
-        .with_conn(|conn| router_db::repos::nodes::get_provider_nodes(conn, None))
-        .unwrap_or_default();
-    let combos = load_combos(db);
-    let combo_lookup = |name: &str| -> Option<Value> { lookup_combo(&combos, name) };
+    let combo_lookup = |name: &str| -> Option<Value> { lookup_combo(&config.combos, name) };
 
-    let info: ModelInfo = get_model_info(model_str, aliases.as_ref(), combo_lookup, &nodes);
+    let info: ModelInfo = get_model_info(
+        model_str,
+        Some(&config.aliases),
+        combo_lookup,
+        &config.nodes,
+    );
 
     if info.provider.is_empty() {
         // A combo name that reached the single-model path: re-check, since the
@@ -454,27 +471,26 @@ async fn handle_single_model_chat_inner(
             if let Err(error) = push_combo(&mut chain, model_str) {
                 return ChatResult::error(http_status::BAD_REQUEST, &error);
             }
-            let settings = db
-                .with_conn(router_db::repos::settings::get_settings)
-                .unwrap_or(Value::Null);
-            let strategy = combo_strategy(&settings, model_str);
+            let settings = &config.settings;
+            let strategy = combo_strategy(settings, model_str);
             if strategy == "fusion" {
                 return run_fusion(
                     db,
                     body,
                     combo_models,
-                    &settings,
+                    settings,
                     model_str,
                     headers,
                     endpoint,
                     api_key,
                     chain,
+                    Arc::clone(&config),
                 )
                 .await;
             }
             let required = detect_required_capabilities(&body);
             let augmented =
-                augment_models_with_capacity_adapter(&combo_models, &required, &settings);
+                augment_models_with_capacity_adapter(&combo_models, &required, settings);
             let sticky = settings
                 .get("comboStickyRoundRobinLimit")
                 .and_then(Value::as_u64)
@@ -501,6 +517,7 @@ async fn handle_single_model_chat_inner(
                     api_key,
                     Arc::clone(&slot),
                     &chain,
+                    &config,
                 ),
             )
             .await;
@@ -572,9 +589,7 @@ async fn handle_single_model_chat_inner(
             update_provider_credentials(db, &connection_id, patch);
         }
 
-        let settings = db
-            .with_conn(router_db::repos::settings::get_settings)
-            .unwrap_or(Value::Null);
+        let settings = &config.settings;
         let provider_thinking = settings
             .get("providerThinking")
             .and_then(|p| p.get(&provider))
@@ -719,6 +734,7 @@ async fn run_fusion(
     endpoint: Option<&str>,
     api_key: Option<String>,
     chain: ComboChain,
+    config: Arc<router_db::config_cache::ConfigSnapshot>,
 ) -> ChatResult {
     let combo_strategies = settings.get("comboStrategies");
     let judge_model = combo_strategies
@@ -742,6 +758,7 @@ async fn run_fusion(
     // The panel runs each member as its own task, so the chain has to be owned
     // and cloned per callback rather than borrowed.
     let panel_chain = chain.clone();
+    let panel_config = Arc::clone(&config);
     let outcome = handle_fusion_chat(
         &body,
         &combo_models,
@@ -753,6 +770,7 @@ async fn run_fusion(
             let db = panel_db.clone();
             let endpoint = panel_endpoint.clone();
             let chain = panel_chain.clone();
+            let config = Arc::clone(&panel_config);
             async move {
                 let result = handle_single_model_chat(
                     &db,
@@ -762,6 +780,7 @@ async fn run_fusion(
                     endpoint.as_deref(),
                     api_key,
                     chain,
+                    config,
                 )
                 .await;
                 if !result.success() {
@@ -782,11 +801,14 @@ async fn run_fusion(
 
     match outcome {
         FusionOutcome::Judge { body, model } => {
-            handle_single_model_chat(db, body, &model, headers, endpoint, api_key, chain).await
+            handle_single_model_chat(db, body, &model, headers, endpoint, api_key, chain, config)
+                .await
         }
         FusionOutcome::Direct { model } => {
-            handle_single_model_chat(db, panel_body, &model, headers, endpoint, api_key, chain)
-                .await
+            handle_single_model_chat(
+                db, panel_body, &model, headers, endpoint, api_key, chain, config,
+            )
+            .await
         }
         FusionOutcome::Failed { status, message } => ChatResult::error(status, &message),
     }
@@ -824,11 +846,6 @@ fn lookup_combo(combos: &[Value], name: &str) -> Option<Value> {
         .iter()
         .find(|c| c.get("name").and_then(Value::as_str) == Some(name))
         .cloned()
-}
-
-fn load_combos(db: &Db) -> Vec<Value> {
-    db.with_conn(router_db::repos::combos::get_combos)
-        .unwrap_or_default()
 }
 
 /// `saveRequestUsage(entry)`. The callback is synchronous, so the write blocks

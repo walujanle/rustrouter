@@ -208,14 +208,25 @@ impl SseStream {
             self.ttft_at = Some(router_db::time::now_ms() as i64);
         }
 
-        let text = self.decode(chunk);
-        self.buffer.push_str(&text);
+        self.decode_into(chunk);
 
-        let mut lines: Vec<String> = self.buffer.split('\n').map(str::to_string).collect();
-        self.buffer = lines.pop().unwrap_or_default();
-        for line in &lines {
-            self.process_line(line, &mut out);
+        // Split the complete lines out of the buffer, leaving only the partial
+        // tail behind. The old form collected the whole buffer into a fresh
+        // `Vec<String>` and then rebuilt it from the remainder, so every chunk
+        // allocated one `String` per line plus a new buffer. Taking the buffer
+        // out lets each line be borrowed in place; the tail is put back
+        // without copying the bytes that were consumed.
+        let mut buffer = std::mem::take(&mut self.buffer);
+        if let Some(last) = buffer.rfind('\n') {
+            // `..last`, not `..=last`: the final `\n` terminates the last line
+            // rather than starting an empty one, which is what the old
+            // `split`/`pop` pair expressed.
+            for line in buffer[..last].split('\n') {
+                self.process_line(line, &mut out);
+            }
+            buffer.drain(..=last);
         }
+        self.buffer = buffer;
         out
     }
 
@@ -777,18 +788,32 @@ impl SseStream {
     /// `decoder.decode(chunk, {stream: true})`: emit every complete UTF-8
     /// sequence, hold an incomplete tail for the next chunk, and replace
     /// genuinely invalid bytes with U+FFFD.
-    fn decode(&mut self, chunk: &[u8]) -> String {
+    /// Append `chunk` to `buffer`, replacing any truncated tail from the
+    /// previous chunk with U+FFFD once it is known to be incomplete.
+    ///
+    /// Writes into the stream's own buffer rather than returning a fresh
+    /// `String`: this runs once per upstream chunk, and the returned `String`
+    /// was immediately appended to that same buffer.
+    fn decode_into(&mut self, chunk: &[u8]) {
         self.pending.extend_from_slice(chunk);
-        let mut out = String::new();
         loop {
             match validate_utf8(&self.pending) {
                 None => {
-                    out.push_str(std::str::from_utf8(&self.pending).unwrap_or_default());
+                    self.buffer
+                        .push_str(std::str::from_utf8(&self.pending).unwrap_or_default());
                     self.pending.clear();
                     break;
                 }
                 Some((valid_up_to, error_len)) => {
-                    out.push_str(&String::from_utf8_lossy(&self.pending[..valid_up_to]));
+                    // `from_utf8_lossy` only allocates when the prefix has an
+                    // invalid sequence; the valid prefix here is exactly that,
+                    // so push the borrowed form when it is valid.
+                    match std::str::from_utf8(&self.pending[..valid_up_to]) {
+                        Ok(text) => self.buffer.push_str(text),
+                        Err(_) => self
+                            .buffer
+                            .push_str(&String::from_utf8_lossy(&self.pending[..valid_up_to])),
+                    }
                     match error_len {
                         // A truncated tail may still complete next chunk.
                         None => {
@@ -796,14 +821,13 @@ impl SseStream {
                             break;
                         }
                         Some(len) => {
-                            out.push('\u{FFFD}');
+                            self.buffer.push('\u{FFFD}');
                             self.pending.drain(..valid_up_to + len);
                         }
                     }
                 }
             }
         }
-        out
     }
 
     /// `decoder.decode()`: flush the decoder, incomplete tail becomes U+FFFD.
@@ -893,6 +917,26 @@ mod tests {
         let mut opts = SseStreamOptions::new(StreamMode::Translate, source);
         opts.target_format = Some(target.to_string());
         SseStream::new(opts)
+    }
+
+    /// The line splitter is what makes a chunk boundary invisible to the
+    /// parser: a frame split across two `push` calls must parse exactly as the
+    /// same bytes delivered at once, and a run of newlines must not invent or
+    /// drop empty lines.
+    #[test]
+    fn a_frame_split_across_chunks_matches_the_unsplit_bytes() {
+        let frame = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n";
+
+        let mut whole = passthrough();
+        let at_once = text_of(whole.push(frame.as_bytes()));
+
+        // Every two-way split point, so no boundary is left untested.
+        for cut in 1..frame.len() {
+            let mut split = passthrough();
+            let mut out = text_of(split.push(&frame.as_bytes()[..cut]));
+            out.push_str(&text_of(split.push(&frame.as_bytes()[cut..])));
+            assert_eq!(out, at_once, "split at byte {cut}");
+        }
     }
 
     #[test]

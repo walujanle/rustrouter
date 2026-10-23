@@ -17,6 +17,7 @@
 //! depend on this crate without a cycle.
 
 pub mod backup;
+pub mod config_cache;
 pub mod driver;
 pub mod error;
 pub mod export;

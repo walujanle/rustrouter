@@ -10,7 +10,7 @@ pub mod catalog;
 
 pub use catalog::{
     Capabilities, CatalogSource, Pricing, aggregate_combo_capabilities, calculate_cost_from_tokens,
-    capabilities_from_service_kind, default_pricing, get_capabilities_for_model,
-    get_pricing_for_model, get_thinking_levels, invalidate_catalog, looks_like_vision_model,
-    match_pattern, set_catalog_source, supports_reasoning,
+    capabilities_from_service_kind, capabilities_without_catalog_source, default_pricing,
+    get_capabilities_for_model, get_pricing_for_model, get_thinking_levels, invalidate_catalog,
+    looks_like_vision_model, match_pattern, set_catalog_source, supports_reasoning,
 };

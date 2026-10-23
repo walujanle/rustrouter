@@ -257,13 +257,112 @@ fn is_commandcode_text_only(model: &str) -> bool {
     })
 }
 
+/// Resolved capability sets, keyed by `(provider, model)`.
+///
+/// A model that misses both exact tables falls through every glob in
+/// `patternCapabilities`, and the chat pipeline resolves capabilities several
+/// times per request (`chat_core`, `thinking`, the capacity adapter, the combo
+/// aggregator). Measured at ~16 µs per lookup for an id the tables do not name,
+/// against ~0.1 µs for one they do, so the scan is the largest cost left on the
+/// request path.
+///
+/// The hand tables are a `LazyLock` parse of a committed file and never change,
+/// so the only input that can alter a result is the installed [`CatalogSource`].
+/// [`SOURCE_GEN`] bumps on every install and the cache drops its contents on the
+/// next lookup, which keeps a detached source's answers from outliving it.
+static CAPS_CACHE: LazyLock<std::sync::RwLock<CapsCache>> = LazyLock::new(Default::default);
+
+/// Bumped whenever the installed catalog source changes.
+static SOURCE_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Entries kept before the cache is dropped wholesale.
+///
+/// Model ids come from the client, so the map needs a ceiling. A real
+/// deployment resolves a handful of ids; clearing at the cap costs one scan per
+/// entry and keeps a hostile client from growing the map without bound. An LRU
+/// would buy nothing here: the working set is tiny and the miss path is one
+/// regex walk.
+const MAX_CAPS_CACHE: usize = 512;
+
+#[derive(Default)]
+struct CapsCache {
+    /// The [`SOURCE_GEN`] the entries were computed under.
+    generation: u64,
+    entries: HashMap<ModelKey, Capabilities>,
+}
+
+/// The cached result for `(provider, model)`, if one was computed under the
+/// current source.
+fn cached_capabilities(
+    generation: u64,
+    provider: Option<&str>,
+    model: &str,
+) -> Option<Capabilities> {
+    let cache = CAPS_CACHE.read().ok()?;
+    if cache.generation != generation {
+        return None;
+    }
+    cache
+        .entries
+        .get(&(provider.map(str::to_string), model.to_string()))
+        .cloned()
+}
+
+fn store_capabilities(generation: u64, provider: Option<&str>, model: &str, caps: &Capabilities) {
+    let Ok(mut cache) = CAPS_CACHE.write() else {
+        return;
+    };
+    // Only ever move the stored generation forward. A lookup that started
+    // before an install can reach this after it, and writing its own older
+    // generation back would make every entry computed under the new source
+    // look stale — and, worse, would let a result computed under the old
+    // source be served again.
+    if cache.generation != generation {
+        return;
+    }
+    if cache.entries.len() >= MAX_CAPS_CACHE {
+        cache.entries.clear();
+    }
+    cache.entries.insert(
+        (provider.map(str::to_string), model.to_string()),
+        caps.clone(),
+    );
+}
+
 /// `getCapabilitiesForModel(provider, model)`: the 4-step fallback chain, each
 /// result merged over `DEFAULT_CAPABILITIES`.
+///
+/// Memoised; [`compute_capabilities`] is the resolution itself.
 pub fn get_capabilities_for_model(provider: Option<&str>, model: &str) -> Capabilities {
-    let default = &CATALOG.default_capabilities;
     if model.is_empty() {
-        return default.clone();
+        return CATALOG.default_capabilities.clone();
     }
+    let generation = SOURCE_GEN.load(std::sync::atomic::Ordering::Relaxed);
+    if let Some(hit) = cached_capabilities(generation, provider, model) {
+        return hit;
+    }
+    let caps = compute_capabilities(provider, model, true);
+    store_capabilities(generation, provider, model, &caps);
+    caps
+}
+
+/// The hand tables' answer, with the synced catalog ignored and nothing
+/// memoised.
+///
+/// The sync uses this to work out its deltas: it needs "what the committed
+/// tables say" as the baseline, not "what they say once last sync's file is
+/// layered on". Doing that by detaching the process-wide source would leave
+/// every concurrent request resolving against the hand tables for the length of
+/// the walk, so the baseline is computed here instead.
+pub fn capabilities_without_catalog_source(provider: Option<&str>, model: &str) -> Capabilities {
+    if model.is_empty() {
+        return CATALOG.default_capabilities.clone();
+    }
+    compute_capabilities(provider, model, false)
+}
+
+fn compute_capabilities(provider: Option<&str>, model: &str, use_source: bool) -> Capabilities {
+    let default = &CATALOG.default_capabilities;
 
     let base_model = model.rsplit('/').next().unwrap_or(model);
 
@@ -311,12 +410,12 @@ pub fn get_capabilities_for_model(provider: Option<&str>, model: &str) -> Capabi
     // 3. Pattern match, first hit wins
     for entry in &CATALOG.pattern_capabilities {
         if match_pattern(&entry.pattern, base_model) || match_pattern(&entry.pattern, model) {
-            return refine(Some(&entry.caps), provider, model);
+            return refine(Some(&entry.caps), provider, model, use_source);
         }
     }
 
     // 4. Floor
-    refine(None, provider, model)
+    refine(None, provider, model, use_source)
 }
 
 /// The synced models.dev catalog reader, installed by the sync service
@@ -338,11 +437,19 @@ pub fn set_catalog_source(source: Option<CatalogSource>) {
     if let Ok(mut slot) = CATALOG_SOURCE.write() {
         *slot = source;
     }
+    // Every resolved capability set may have consulted the old source.
+    SOURCE_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// `invalidateCatalog()`. The file reader is stateless here, so this is a no-op
-/// kept for the sync's call site.
-pub fn invalidate_catalog() {}
+/// `invalidateCatalog()`: drop the memoised capability sets.
+///
+/// The file reader behind [`CatalogSource`] is stateless — it re-reads its own
+/// index on every call — so the synced file changing does not change what this
+/// module's tables hold. What it does invalidate is the resolution *result*,
+/// which may have been computed from the previous file.
+pub fn invalidate_catalog() {
+    SOURCE_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
 
 /// `MODALITY_KEYS`: the keys the synced catalog may positively turn on.
 const MODALITY_KEYS: [&str; 4] = ["vision", "pdf", "audioInput", "videoInput"];
@@ -350,16 +457,25 @@ const MODALITY_KEYS: [&str; 4] = ["vision", "pdf", "audioInput", "videoInput"];
 /// `refine(base, provider, model)`: the synced catalog then the name heuristic.
 /// Strictly additive — a capability already true stays true, and a false one
 /// only flips when the outside source positively declares support.
-fn refine(base: Option<&CapsPatch>, provider: Option<&str>, model: &str) -> Capabilities {
+fn refine(
+    base: Option<&CapsPatch>,
+    provider: Option<&str>,
+    model: &str,
+    use_source: bool,
+) -> Capabilities {
     let mut result = match base {
         Some(p) => p.apply(&CATALOG.default_capabilities),
         None => CATALOG.default_capabilities.clone(),
     };
 
-    let source = CATALOG_SOURCE
-        .read()
-        .ok()
-        .and_then(|s| s.as_ref().map(|s| (s.get_modalities, s.get_limits)));
+    let source = use_source
+        .then(|| {
+            CATALOG_SOURCE
+                .read()
+                .ok()
+                .and_then(|s| s.as_ref().map(|s| (s.get_modalities, s.get_limits)))
+        })
+        .flatten();
     if let Some((get_modalities, get_limits)) = source
         && let Some(provider) = provider
     {
@@ -528,7 +644,35 @@ pub fn get_pricing_for_model(provider: Option<&str>, model: &str) -> Option<&'st
     if model.is_empty() {
         return None;
     }
+    // Memoised for the same reason as the capability table: a model the exact
+    // tables do not name walks every pricing glob. The pricing tables come only
+    // from the committed file, so unlike capabilities there is no source
+    // generation to invalidate against.
+    if let Some(hit) = PRICING_CACHE.read().ok().and_then(|c| {
+        c.get(&(provider.map(str::to_string), model.to_string()))
+            .copied()
+    }) {
+        return hit;
+    }
+    let found = resolve_pricing(provider, model);
+    if let Ok(mut cache) = PRICING_CACHE.write() {
+        if cache.len() >= MAX_CAPS_CACHE {
+            cache.clear();
+        }
+        cache.insert((provider.map(str::to_string), model.to_string()), found);
+    }
+    found
+}
 
+/// A `(provider, model)` pair as the caches key it.
+type ModelKey = (Option<String>, String);
+
+/// Memoised [`ModelKey`] to pricing. Holds `None` too, so a model with no rate
+/// is not re-scanned on every request.
+static PRICING_CACHE: LazyLock<std::sync::RwLock<HashMap<ModelKey, Option<&'static Pricing>>>> =
+    LazyLock::new(Default::default);
+
+fn resolve_pricing(provider: Option<&str>, model: &str) -> Option<&'static Pricing> {
     if let Some(provider) = provider
         && let Some(p) = CATALOG
             .provider_pricing
@@ -923,5 +1067,45 @@ mod tests {
 
         // A non-reasoning model has no levels at all.
         assert!(get_thinking_levels(None, "llama-3.1-8b").is_none());
+    }
+
+    /// A memoised answer must not outlive the source it was computed under.
+    ///
+    /// Without the generation bump a model resolved with the synced catalog
+    /// attached keeps its `vision: true` after the source is detached, so a
+    /// capability the dashboard just removed stays in force until restart.
+    ///
+    /// The source is process-global, so this test installs one. It answers for
+    /// its own probe id only: a stub that claimed every model would flip the
+    /// answers of the tests running beside it, and the memo would then hand
+    /// those wrong answers to everyone.
+    #[test]
+    fn a_new_catalog_source_discards_the_memoised_answers() {
+        const MODEL: &str = "vendor/memo-probe-1";
+
+        // `refine` passes the model through as the caller wrote it, so the
+        // probe id arrives with its `vendor/` prefix.
+        fn declares_vision(provider: &str, model: &str) -> Option<Value> {
+            (provider == "vendor" && model.ends_with("memo-probe-1"))
+                .then(|| serde_json::json!({ "vision": true }))
+        }
+        fn declares_nothing(_provider: &str, _model: &str) -> Option<Value> {
+            None
+        }
+
+        set_catalog_source(Some(CatalogSource {
+            get_modalities: declares_vision,
+            get_limits: declares_nothing,
+        }));
+        assert!(
+            get_capabilities_for_model(Some("vendor"), MODEL).vision,
+            "the installed source declares vision"
+        );
+
+        set_catalog_source(None);
+        assert!(
+            !get_capabilities_for_model(Some("vendor"), MODEL).vision,
+            "detaching the source must drop the memoised vision flag"
+        );
     }
 }

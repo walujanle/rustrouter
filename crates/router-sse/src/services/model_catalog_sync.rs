@@ -9,8 +9,8 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::{Arc, LazyLock, Mutex as StdMutex};
 use std::time::Duration;
 
 use serde_json::{Map, Value, json};
@@ -132,7 +132,6 @@ pub struct Entry {
 /// capabilities with the synced catalog detached, so the deltas are relative to
 /// the hand tables, not the last sync.
 fn collect_entries() -> Vec<Entry> {
-    catalog::set_catalog_source(None);
     let mut entries = Vec::new();
     for provider in registry().entries() {
         let Some(models) = &provider.models else {
@@ -143,7 +142,15 @@ fn collect_entries() -> Vec<Entry> {
                 provider: provider.id.clone(),
                 model: model.id.clone(),
                 context_length: model.context_length,
-                current: catalog::get_capabilities_for_model(Some(&provider.id), &model.id),
+                // The baseline is the hand tables alone. Asking the normal
+                // lookup would layer last sync's file on top of them, and
+                // detaching the process-wide source to avoid that would
+                // resolve every concurrent request against the bare tables
+                // for the length of this walk.
+                current: catalog::capabilities_without_catalog_source(
+                    Some(&provider.id),
+                    &model.id,
+                ),
             });
         }
     }
@@ -389,8 +396,10 @@ async fn run_sync() -> Option<Value> {
 
         *INNER.etag.lock().await = new_etag.clone();
         INNER.file_version.store(CATALOG_VERSION, Ordering::SeqCst);
-        // Drop the parse cache so the next lookup re-reads the file just written.
-        *CATALOG_CACHE.lock().await = None;
+        // Rebuild the lookup index from the file just written. This is the one
+        // place the file changes under the process, so the request path never
+        // needs to stat it.
+        refresh_catalog_index();
         catalog::invalidate_catalog();
         json!({
             "status": "updated",
@@ -461,63 +470,107 @@ pub fn start_model_catalog_sync() {
     });
 }
 
-/// The parsed catalog, cached against the file's length and mtime.
+/// The synced catalog, flattened into the two lookups the request path makes.
 ///
-/// The capability lookup runs on the request hot path and the file is ~263 KB,
-/// so re-reading and re-parsing it per call is pure waste. The cache key is
-/// `(len, mtime_ms)`: the sync rewrites the file through `write_atomic`, so a
-/// changed key re-parses and an unchanged one is served from memory.
-static CATALOG_CACHE: LazyLock<Mutex<Option<(u64, i64, Value)>>> =
-    LazyLock::new(|| Mutex::new(None));
+/// The capability lookup runs two or three times per request, and the file is
+/// ~263 KB. The previous reader deep-cloned the whole parsed tree (every model
+/// and provider) on every call, so one request paid several full-tree copies;
+/// that was the dominant per-request cost whenever a synced catalog existed.
+///
+/// `Index` holds only the delta rows the sync writes, and the cache hands out an
+/// `Arc`, so a lookup is one mutex acquire plus a refcount bump. The file is
+/// read once, at install and after each sync: nothing on the request path
+/// touches the filesystem.
+struct Index {
+    /// `"{provider}:{base_id}"` -> declared modality flags.
+    modalities: HashMap<String, Map<String, Value>>,
+    /// `provider` -> `model` -> limits delta.
+    limits: HashMap<String, HashMap<String, Map<String, Value>>>,
+}
+
+static CATALOG_CACHE: LazyLock<StdMutex<Option<Arc<Index>>>> =
+    LazyLock::new(|| StdMutex::new(None));
+
+/// Build the flat lookup index from a parsed catalog file.
+fn build_index(parsed: &Value) -> Index {
+    let mut modalities = HashMap::new();
+    if let Some(models) = parsed.get("models").and_then(Value::as_object) {
+        for (key, value) in models {
+            if let Some(map) = value.as_object() {
+                modalities.insert(key.clone(), map.clone());
+            }
+        }
+    }
+    let mut limits = HashMap::new();
+    if let Some(providers) = parsed.get("providers").and_then(Value::as_object) {
+        for (provider, models) in providers {
+            let Some(models) = models.as_object() else {
+                continue;
+            };
+            let mut by_model = HashMap::with_capacity(models.len());
+            for (model, delta) in models {
+                if let Some(map) = delta.as_object() {
+                    by_model.insert(model.clone(), map.clone());
+                }
+            }
+            limits.insert(provider.clone(), by_model);
+        }
+    }
+    Index { modalities, limits }
+}
+
+/// Read and index the catalog file now, replacing the cache.
+///
+/// Called by the sync after it rewrites the file, and lazily on the first
+/// lookup. A missing or unreadable file clears the cache: the hand tables then
+/// decide on their own, which is the documented fallback.
+fn refresh_catalog_index() {
+    let index = std::fs::read_to_string(catalog_file())
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .map(|parsed| Arc::new(build_index(&parsed)));
+    if let Ok(mut cache) = CATALOG_CACHE.lock() {
+        *cache = index;
+    }
+}
+
+/// The current index, built on first use and after a sync.
+fn catalog_index() -> Option<Arc<Index>> {
+    if let Ok(cache) = CATALOG_CACHE.lock()
+        && let Some(index) = cache.as_ref()
+    {
+        return Some(Arc::clone(index));
+    }
+    refresh_catalog_index();
+    CATALOG_CACHE
+        .lock()
+        .ok()
+        .and_then(|cache| cache.as_ref().map(Arc::clone))
+}
 
 /// `installCatalogSource()`: hand the reader to `catalog::catalog`.
 pub async fn install_catalog_source() {
+    // Build once at install time so the first request does not pay for it.
+    refresh_catalog_index();
     catalog::set_catalog_source(Some(catalog::CatalogSource {
         get_modalities: |provider, model| {
-            let parsed = read_catalog_cached_blocking()?;
-            parsed
-                .get("models")?
-                .get(format!("{provider}:{}", base_id(model)))
+            let index = catalog_index()?;
+            index
+                .modalities
+                .get(&format!("{provider}:{}", base_id(model)))
                 .cloned()
+                .map(Value::Object)
         },
         get_limits: |provider, model| {
-            let parsed = read_catalog_cached_blocking()?;
-            let by_provider = parsed.get("providers")?.get(provider)?;
+            let index = catalog_index()?;
+            let by_provider = index.limits.get(provider)?;
             by_provider
                 .get(model)
                 .or_else(|| by_provider.get(base_id(model).as_str()))
                 .cloned()
+                .map(Value::Object)
         },
     }));
-}
-
-/// Sync read for the `fn`-pointer reader, which cannot await.
-///
-/// Uses `try_lock` so a concurrent sync's brief hold falls back to a direct
-/// read rather than blocking a request thread; the cache is an optimisation,
-/// not a correctness requirement.
-fn read_catalog_cached_blocking() -> Option<Value> {
-    let meta = std::fs::metadata(catalog_file()).ok()?;
-    let key = (
-        meta.len(),
-        meta.modified()
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0),
-    );
-    if let Ok(cache) = CATALOG_CACHE.try_lock()
-        && let Some((len, mtime, parsed)) = cache.as_ref()
-        && (*len, *mtime) == key
-    {
-        return Some(parsed.clone());
-    }
-    let text = std::fs::read_to_string(catalog_file()).ok()?;
-    let parsed: Value = serde_json::from_str(&text).ok()?;
-    if let Ok(mut cache) = CATALOG_CACHE.try_lock() {
-        *cache = Some((key.0, key.1, parsed.clone()));
-    }
-    Some(parsed)
 }
 
 /// `catalog-sync` route's GET body: the state plus a summary of the file.
@@ -556,6 +609,49 @@ mod tests {
     fn base_id_strips_vendor_and_tag() {
         assert_eq!(base_id("zai-org/GLM-4.6V:free"), "glm-4.6v");
         assert_eq!(base_id("claude-opus-4"), "claude-opus-4");
+    }
+
+    /// The request path must not deep-clone the catalog per lookup.
+    ///
+    /// The reader used to return a copy of the whole parsed file on every call,
+    /// and the capability lookup runs several times per request. `Index` is the
+    /// flat projection of the two delta tables, so a lookup is a map hit plus
+    /// the row it names, and the cached `Arc` is shared.
+    #[test]
+    fn the_index_projects_only_the_two_delta_tables() {
+        let parsed = json!({
+            "syncedAt": "t",
+            "models": {
+                "kimi:kimi-k3": {"vision": true},
+                "moonshotai:kimi-k3": {"vision": true},
+            },
+            "providers": {
+                "kimi": {"kimi-k3": {"contextWindow": 200000}},
+            },
+            "ignored": {"big": "payload"},
+        });
+        let index = build_index(&parsed);
+        assert_eq!(index.modalities.len(), 2);
+        assert_eq!(
+            index.modalities.get("kimi:kimi-k3"),
+            Some(&json!({"vision": true}).as_object().unwrap().clone())
+        );
+        assert_eq!(
+            index.limits.get("kimi").and_then(|m| m.get("kimi-k3")),
+            Some(
+                &json!({"contextWindow": 200000})
+                    .as_object()
+                    .unwrap()
+                    .clone()
+            )
+        );
+        assert!(
+            index
+                .modalities
+                .get("kimi:kimi-k3")
+                .is_some_and(|m| !m.contains_key("ignored")),
+            "the unrelated top-level key must not be projected"
+        );
     }
 
     #[test]
