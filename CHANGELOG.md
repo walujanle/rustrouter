@@ -58,6 +58,31 @@ returned instead of being held for ~100 s.
   polls it. `stale_deadlines` also became a `VecDeque` drained from the front
   instead of a `Vec` rescanned in full twice per request.
 
+### Security
+
+- **rustls-webpki 0.103.15 → 0.103.16 (RUSTSEC-2026-0382)**: certificate
+  verification could accept distrusted intermediates. Reached through
+  `reqwest` → `hyper-rustls` → `rustls`, so every outbound provider call used
+  the affected verifier.
+
+- **webpki-root-certs 1.0.9 → 1.0.10 (RUSTSEC-2026-0383)**: the bundled root
+  store trusted distrusted emSign intermediates. Reached through
+  `rustls-platform-verifier`.
+
+- **DOMPurify 3.4.16 → 3.4.17 (GHSA-cg2g-xh64-v4q7, GHSA-mrv2-3pqr-j5jr,
+  GHSA-c6gr-qvv4-5v3f)**: three critical sanitiser bypasses — `SAFE_FOR_TEMPLATES`
+  split expressions surviving in shadow-root content, `IN_PLACE` hook removal
+  leaving detached subtrees' handlers armed, and the SMIL `attributeName=href`
+  guard skipped under `application/xhtml+xml`. Reached through `monaco-editor`.
+  The `overrides` pin in `web/package.json` was holding the vulnerable version;
+  it now pins the fixed one.
+
+- **Vite 8.3.0 → 8.3.5 (GHSA-698v-4r3x-3vcv, GHSA-r825-w8mm-5pxw,
+  GHSA-587h-7wmj-h5pm, GHSA-9jrq-w75r-8gcw, GHSA-rq7h-c2jc-7f22,
+  GHSA-vfpm-58rq-9qcg)**: arbitrary command execution through `launch-editor`
+  argument escaping, a Windows existence-check bypass, cross-origin script
+  execution through custom middleware, and `server.fs.allow` path disclosure.
+
 ## [0.2.2] - 2026-10-19
 
 ### Fixed
