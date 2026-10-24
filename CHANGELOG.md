@@ -3,6 +3,13 @@
 All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is semantic.
 
+## [0.3.2] - 2026-10-24
+
+### Changed
+
+- Document RustRouter as a Rust rewrite and fork of decolua's 9router in the
+  README; retain 9router's MIT copyright notice alongside RustRouter's in `LICENSE`.
+
 ## [0.3.1] - 2026-10-23
 
 ### Security

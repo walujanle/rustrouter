@@ -6,10 +6,11 @@ configure, with format translation, model-combo fallback, multi-account
 fallback, OAuth and API-key credential management, token refresh, usage
 tracking, and an optional quota tracker.
 
-rustrouter listens on **20129**. It shares one SQLite file with
-[9router](https://github.com/decolua/9router) using a byte-identical schema, so a
-database can move between the two installs with no migration step — and the two
-can run side by side.
+RustRouter is a fork of [9router](https://github.com/decolua/9router) by decolua,
+with the codebase rewritten in Rust. RustRouter listens on **20129**. It shares
+one SQLite file with 9router using a byte-identical schema, so a database can
+move between the two installs with no migration step, and the two can run side
+by side.
 
 ## Install
 

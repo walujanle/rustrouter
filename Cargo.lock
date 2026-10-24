@@ -1992,7 +1992,7 @@ dependencies = [
 
 [[package]]
 name = "router-db"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "chrono",
  "dirs",
@@ -2013,7 +2013,7 @@ dependencies = [
 
 [[package]]
 name = "router-server"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "async-stream",
  "axum",
@@ -2052,7 +2052,7 @@ dependencies = [
 
 [[package]]
 name = "router-sse"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -2245,7 +2245,7 @@ dependencies = [
 
 [[package]]
 name = "rustrouter"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "chrono",
